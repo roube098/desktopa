@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 interface LeftSidebarProps {
     ports: Ports;
     openEditor: (ext: string, isRecent?: boolean, path?: string) => void;
+    openPdf?: (filePath: string) => void;
     isOpen: boolean;
     onOpenSettings: () => void;
 }
@@ -15,7 +16,7 @@ interface LocalWorkspaceFile {
     relativePath: string;
 }
 
-export function LeftSidebar({ ports, openEditor, isOpen, onOpenSettings }: LeftSidebarProps) {
+export function LeftSidebar({ ports, openEditor, openPdf, isOpen, onOpenSettings }: LeftSidebarProps) {
     const [workspaceFiles, setWorkspaceFiles] = useState<LocalWorkspaceFile[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -87,6 +88,10 @@ export function LeftSidebar({ ports, openEditor, isOpen, onOpenSettings }: LeftS
             const result = await window.electronAPI.openWorkspaceFile(file.path);
             if (result.success) {
                 if (result.mode === 'external') {
+                    return;
+                }
+                if (result.mode === 'pdf' && result.path && openPdf) {
+                    openPdf(result.path);
                     return;
                 }
                 // Determine editor type from extension

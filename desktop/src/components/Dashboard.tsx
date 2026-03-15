@@ -95,6 +95,7 @@ interface RecentFile {
 interface DashboardProps {
     ports: Ports;
     openEditor: (ext: string, isRecent?: boolean, path?: string) => void;
+    openPdf?: (filePath: string) => void;
     subagents?: ExcelorSubagentDescriptor[];
 }
 
@@ -168,7 +169,7 @@ function DashboardThreadUI({ subagents = [] }: { subagents?: ExcelorSubagentDesc
     );
 }
 
-export function Dashboard({ ports, openEditor, subagents = [] }: DashboardProps) {
+export function Dashboard({ ports, openEditor, openPdf, subagents = [] }: DashboardProps) {
     const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -233,6 +234,8 @@ export function Dashboard({ ports, openEditor, subagents = [] }: DashboardProps)
             });
             if (!result.success) {
                 setCreateError(result.error || 'Failed to create file.');
+            } else if (format === 'pdf' && result.workspacePath && openPdf) {
+                openPdf(result.workspacePath);
             }
         } catch (err: unknown) {
             setCreateError(err instanceof Error ? err.message : String(err));

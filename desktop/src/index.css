@@ -1719,6 +1719,21 @@ input[type="text"]:focus {
   background: var(--bg-elevated);
 }
 
+.aui-composer-pdf-mention-trigger {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.aui-composer-pdf-mention-trigger:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
 .aui-composer-send {
   width: 32px;
   height: 32px;
@@ -2124,6 +2139,22 @@ input[type="text"]:focus {
   gap: 8px;
   padding: 8px 16px 0;
   flex-wrap: wrap;
+}
+
+.aui-attachment-open-pdf {
+  margin-top: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.aui-attachment-open-pdf:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .aui-attachment-root {

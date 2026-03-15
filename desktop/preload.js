@@ -141,4 +141,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
     addCustomModel: (providerId, modelId, modelName) => ipcRenderer.invoke("add-custom-model", providerId, modelId, modelName),
     removeCustomModel: (providerId, modelId) => ipcRenderer.invoke("remove-custom-model", providerId, modelId),
     getMergedModels: (providerId) => ipcRenderer.invoke("get-merged-models", providerId),
+
+    // PDF viewer
+    readPdfFile: (filePath) => {
+        const pathString = typeof filePath === "string" ? filePath : (filePath?.path && typeof filePath.path === "string" ? filePath.path : String(filePath || ""));
+        return ipcRenderer.invoke("pdf:readFile", pathString);
+    },
+    getDocumentHighlights: (filePath) => ipcRenderer.invoke("pdf:getDocumentHighlights", typeof filePath === "string" ? filePath : filePath?.path ?? ""),
+    saveDocumentHighlights: (filePath, highlights) => ipcRenderer.invoke("pdf:saveDocumentHighlights", typeof filePath === "string" ? filePath : filePath?.path ?? "", highlights),
+    getLastViewedPage: (filePath) => ipcRenderer.invoke("pdf:getLastViewedPage", typeof filePath === "string" ? filePath : filePath?.path ?? ""),
+    saveLastViewedPage: (filePath, pageNumber) => ipcRenderer.invoke("pdf:saveLastViewedPage", typeof filePath === "string" ? filePath : filePath?.path ?? "", pageNumber),
+    extractPdfText: (filePath) => ipcRenderer.invoke("pdf:extractText", typeof filePath === "string" ? filePath : filePath?.path ?? ""),
+    extractPdfTextFromBuffer: (base64) => ipcRenderer.invoke("pdf:extractTextFromBuffer", base64),
 });

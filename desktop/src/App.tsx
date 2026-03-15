@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AssistantRuntimeProvider, CompositeAttachmentAdapter, SimpleImageAttachmentAdapter, SimpleTextAttachmentAdapter, useLocalRuntime } from '@assistant-ui/react';
+import { PdfAttachmentAdapter } from './lib/pdf-attachment-adapter';
 import { Titlebar, Dashboard, EXCELOR_AGENT_CONFIG } from './components/Dashboard';
 import { Sidebar } from './components/Sidebar';
 import { LeftSidebar } from './components/LeftSidebar';
@@ -8,7 +9,8 @@ import { Settings } from './components/Settings';
 import { ArrowLeft, ArrowRight, RotateCw, X, ExternalLink } from 'lucide-react';
 import { executeAgentTool, type EditorCommand } from './lib/editor-tools';
 import type { ToolExecutionResult } from './types/agent-types';
-type CenterMode = 'dashboard' | 'browser' | 'editor' | 'settings';
+import { PDFViewer, type PDFViewerRef, type PdfHighlightLocation } from './components/PDFViewer';
+type CenterMode = 'dashboard' | 'browser' | 'editor' | 'pdf' | 'settings';
 type EditorFrameLoadStatus = 'idle' | 'assigned' | 'ready' | 'failed';
 
 const DEFAULT_BROWSER_URL = 'https://www.google.com';
@@ -53,6 +55,14 @@ export default function App() {
     });
     const [isAddressFocused, setIsAddressFocused] = useState(false);
     const [excelorSnapshot, setExcelorSnapshot] = useState<ExcelorSnapshot | null>(null);
+    const [pdfPath, setPdfPath] = useState<string | null>(null);
+    const [fullPdfText, setFullPdfText] = useState('');
+    const fullPdfTextRef = useRef('');
+    const includeFullPdfContextRef = useRef(false);
+    const pdfViewerRef = useRef<PDFViewerRef>(null);
+    useEffect(() => {
+        fullPdfTextRef.current = fullPdfText;
+    }, [fullPdfText]);
     const addressFocusRef = useRef(false);
     const browserHostRef = useRef<HTMLDivElement>(null);
     const browserToolActiveRef = useRef(false);
@@ -195,6 +205,7 @@ export default function App() {
             attachments: new CompositeAttachmentAdapter([
                 new SimpleImageAttachmentAdapter(),
                 new SimpleTextAttachmentAdapter(),
+                new PdfAttachmentAdapter(),
             ]),
         }),
         [],
@@ -205,15 +216,28 @@ export default function App() {
             () => ({
                 async *run({ messages }) {
                     const lastMessage = messages[messages.length - 1];
-                    const userText =
+                    let userText =
                         lastMessage?.content
                             .filter((c: any) => c.type === 'text')
                             .map((c: any) => c.text)
                             .join('') ?? '';
 
+                    const pdfParts = (lastMessage?.content?.filter((c: any) => c.type === 'data' && c.name === 'pdf') ?? []) as Array<{ data: { fileName: string; text: string } }>;
+                    for (const part of pdfParts) {
+                        const { fileName, text } = part.data ?? {};
+                        if (fileName && text != null) {
+                            userText = `Context from PDF "${fileName}":\n"""${text}"""\n\n${userText}`;
+                        }
+                    }
+
                     if (!userText.trim()) {
                         yield { content: [{ type: 'text', text: 'Please enter a question.' }] };
                         return;
+                    }
+
+                    if (includeFullPdfContextRef.current && fullPdfTextRef.current) {
+                        userText = `Context from PDF:\n"""${fullPdfTextRef.current}"""\n\n${userText}`;
+                        includeFullPdfContextRef.current = false;
                     }
 
                     if (!window.electronAPI) {
@@ -736,6 +760,27 @@ export default function App() {
         setCenterMode('dashboard');
     };
 
+    const openPdf = useCallback((filePath: string) => {
+        setShowSettings(false);
+        setPdfPath(filePath);
+        setDocumentContext('pdf');
+        setCenterMode('pdf');
+    }, []);
+
+    const closePdf = useCallback(() => {
+        setPdfPath(null);
+        setFullPdfText('');
+        setCenterMode('dashboard');
+    }, []);
+
+    const handlePdfExplainSelection = useCallback((text: string, _style: string, location: PdfHighlightLocation) => {
+        const prompt = `Explain this selected text from the PDF:\n\n"""${text}"""`;
+        void window.electronAPI?.excelorLaunch(prompt, MAIN_SCOPE);
+        if (pdfViewerRef.current && location?.id) {
+            setTimeout(() => pdfViewerRef.current?.scrollToHighlight(location), 600);
+        }
+    }, []);
+
     const renderBrowserPane = (extraClassName = '') => (
         <div className={`browser-pane ${extraClassName}`.trim()}>
             <div ref={browserHostRef} className="browser-host" />
@@ -827,7 +872,36 @@ export default function App() {
             return renderBrowserPane();
         }
 
-        return <Dashboard ports={ports} openEditor={openEditor} subagents={excelorSnapshot?.subagents ?? []} />;
+        if (activeCenterMode === 'pdf' && pdfPath) {
+            const pdfFileName = pdfPath.includes('/') ? pdfPath.split('/').pop() : pdfPath.includes('\\') ? pdfPath.split('\\').pop() : pdfPath;
+            return (
+                <div className="pdf-pane" style={{ display: 'flex', flex: 1, flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden' }}>
+                    <div className="browser-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                        <button
+                            type="button"
+                            className="browser-icon-btn"
+                            onClick={closePdf}
+                            title="Close PDF"
+                        >
+                            <X size={16} />
+                        </button>
+                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 14, color: 'rgba(255,255,255,0.9)' }}>
+                            {pdfFileName}
+                        </span>
+                    </div>
+                    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                        <PDFViewer
+                            ref={pdfViewerRef}
+                            filePath={pdfPath}
+                            onFullTextExtracted={setFullPdfText}
+                            onExplainSelection={handlePdfExplainSelection}
+                        />
+                    </div>
+                </div>
+            );
+        }
+
+        return <Dashboard ports={ports} openEditor={openEditor} openPdf={openPdf} subagents={excelorSnapshot?.subagents ?? []} />;
     };
 
     return (
@@ -870,6 +944,7 @@ export default function App() {
                         <LeftSidebar
                             ports={ports}
                             openEditor={openEditor}
+                            openPdf={openPdf}
                             isOpen={isLeftOpen}
                             onOpenSettings={() => setShowSettings(true)}
                         />
@@ -935,6 +1010,11 @@ export default function App() {
                             editorLoaded={activeCenterMode === 'editor' && !!editorUrl}
                             isOpen={isRightOpen}
                             forceHidden={isBrowserToolThreadDocked}
+                            showPdfContextPrompt={documentContext === 'pdf' && !!fullPdfText}
+                            onIncludePdfContext={() => { includeFullPdfContextRef.current = true; }}
+                            fullPdfTextRef={fullPdfTextRef}
+                            includeFullPdfContextRef={includeFullPdfContextRef}
+                            openPdf={openPdf}
                         />
 
                         {isBrowserToolThreadDocked && (
@@ -944,7 +1024,7 @@ export default function App() {
                                 style={{ display: 'flex', flexDirection: 'column' }}
                             >
                                 <div className="chat-history">
-                                    <MyThread agentConfig={EXCELOR_AGENT_CONFIG} editorLoaded={activeCenterMode === 'editor' && !!editorUrl} />
+                                    <MyThread agentConfig={EXCELOR_AGENT_CONFIG} editorLoaded={activeCenterMode === 'editor' && !!editorUrl} openPdf={openPdf} />
                                 </div>
                                 {(excelorSnapshot?.subagents?.length ?? 0) > 0 && (
                                     <div className="excelor-subagent-inline">

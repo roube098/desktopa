@@ -30,8 +30,9 @@ interface WorkspaceFilesResult {
 
 interface OpenFileResult {
     success: boolean;
-    mode?: 'editor' | 'external';
+    mode?: 'editor' | 'external' | 'pdf';
     url?: string;
+    path?: string;
     error?: string;
 }
 
@@ -306,6 +307,22 @@ interface ElectronAPI {
     setMcpConnectorEnabled: (connectorId: string, enabled: boolean) => Promise<McpConnector | null>;
     checkMcpConnector: (connectorId: string) => Promise<McpConnector>;
     disconnectMcpConnector: (connectorId: string) => Promise<McpConnector | null>;
+
+    // PDF viewer
+    readPdfFile: (filePath: string | { path: string }) => Promise<string>;
+    getDocumentHighlights: (filePath: string | { path: string }) => Promise<PdfHighlight[]>;
+    saveDocumentHighlights: (filePath: string | { path: string }, highlights: PdfHighlight[]) => Promise<boolean>;
+    getLastViewedPage: (filePath: string | { path: string }) => Promise<number>;
+    saveLastViewedPage: (filePath: string | { path: string }, pageNumber: number) => Promise<boolean>;
+    extractPdfText: (filePath: string | { path: string }) => Promise<{ text?: string; pageCount?: number; error?: string }>;
+    extractPdfTextFromBuffer: (base64: string) => Promise<{ text?: string; pageCount?: number; error?: string }>;
+}
+
+interface PdfHighlight {
+    id: string;
+    pageNumber: number;
+    text: string;
+    rectsOnPage: Array<{ top: number; left: number; width: number; height: number }>;
 }
 
 interface Window {

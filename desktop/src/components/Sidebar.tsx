@@ -6,6 +6,7 @@ import {
     SimpleImageAttachmentAdapter,
     SimpleTextAttachmentAdapter
 } from "@assistant-ui/react";
+import { PdfAttachmentAdapter } from "../lib/pdf-attachment-adapter";
 import { MyThread } from "./MyThread";
 import { getAgentForContext } from "../data/agents";
 import type { AgentConfig } from "../types/agent-types";
@@ -16,6 +17,11 @@ interface SidebarProps {
     editorLoaded: boolean;
     isOpen: boolean;
     forceHidden?: boolean;
+    showPdfContextPrompt?: boolean;
+    onIncludePdfContext?: () => void;
+    fullPdfTextRef?: React.MutableRefObject<string>;
+    includeFullPdfContextRef?: React.MutableRefObject<boolean>;
+    openPdf?: (path: string) => void;
 }
 
 const ONLYOFFICE_SCOPE: ExcelorScope = "onlyoffice";
@@ -33,7 +39,18 @@ function getFileSessionKey(editorUrl: string): string {
     }
 }
 
-export function Sidebar({ documentContext, editorUrl, editorLoaded, isOpen, forceHidden = false }: SidebarProps) {
+export function Sidebar({
+    documentContext,
+    editorUrl,
+    editorLoaded,
+    isOpen,
+    forceHidden = false,
+    showPdfContextPrompt = false,
+    onIncludePdfContext,
+    fullPdfTextRef,
+    includeFullPdfContextRef,
+    openPdf,
+}: SidebarProps) {
     const [isBusy, setIsBusy] = useState(false);
     const prevContextRef = useRef<string>(documentContext);
     const prevFileRef = useRef<string>(getFileSessionKey(editorUrl));
@@ -82,6 +99,7 @@ export function Sidebar({ documentContext, editorUrl, editorLoaded, isOpen, forc
         attachments: new CompositeAttachmentAdapter([
             new SimpleImageAttachmentAdapter(),
             new SimpleTextAttachmentAdapter(),
+            new PdfAttachmentAdapter(),
         ]),
     }), []);
 
@@ -92,15 +110,28 @@ export function Sidebar({ documentContext, editorUrl, editorLoaded, isOpen, forc
 
             try {
                 const lastMessage = messages[messages.length - 1];
-                const userText =
+                let userText =
                     lastMessage?.content
                         .filter((c) => c.type === "text")
                         .map((c) => c.text)
                         .join("") ?? "";
 
+                const pdfParts = (lastMessage?.content?.filter((c: { type: string; name?: string }) => c.type === "data" && c.name === "pdf") ?? []) as Array<{ data: { fileName: string; text: string } }>;
+                for (const part of pdfParts) {
+                    const { fileName, text } = part.data ?? {};
+                    if (fileName && text != null) {
+                        userText = `Context from PDF "${fileName}":\n"""${text}"""\n\n${userText}`;
+                    }
+                }
+
                 if (!userText.trim()) {
                     yield { content: [{ type: "text", text: "Please enter a request." }] };
                     return;
+                }
+
+                if (documentContext === "pdf" && includeFullPdfContextRef?.current && fullPdfTextRef?.current) {
+                    userText = `Context from PDF:\n"""${fullPdfTextRef.current}"""\n\n${userText}`;
+                    if (includeFullPdfContextRef.current) includeFullPdfContextRef.current = false;
                 }
                 if (!window.electronAPI) {
                     yield { content: [{ type: "text", text: "Electron API not available." }] };
@@ -132,7 +163,7 @@ export function Sidebar({ documentContext, editorUrl, editorLoaded, isOpen, forc
                 let latestSnapshot: ExcelorSnapshot | null = null;
                 let lastDraftText = "";
                 let emittedText = "";
-                const requestedScope: ExcelorScope = ONLYOFFICE_SCOPE;
+                const requestedScope: ExcelorScope = documentContext === "pdf" ? "main" : ONLYOFFICE_SCOPE;
                 let acceptedScope: ExcelorScope = requestedScope;
 
                 const finish = (item: StreamItem) => {
@@ -268,11 +299,19 @@ export function Sidebar({ documentContext, editorUrl, editorLoaded, isOpen, forc
     return (
         <aside id="right-sidebar" className={`right-sidebar chat-sidebar ${(!isOpen || forceHidden) ? 'hidden' : ''}`} style={{ display: 'flex', flexDirection: 'column' }}>
 
+            {showPdfContextPrompt && onIncludePdfContext && (
+                <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.1)', background: 'rgba(44,83,100,0.3)' }}>
+                    <p style={{ margin: '0 0 8px 0', fontSize: '0.9rem', color: 'rgba(255,255,255,0.9)' }}>Include full PDF context?</p>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <button type="button" className="btn ghost" style={{ fontSize: '0.85rem' }} onClick={onIncludePdfContext}>Yes, include full PDF</button>
+                    </div>
+                </div>
+            )}
 
             {/* ── Chat Thread ─────────────────────────── */}
             <div className="chat-history">
                 <AssistantRuntimeProvider key={threadKey} runtime={runtime}>
-                    <MyThread agentConfig={activeAgent} editorLoaded={editorLoaded} />
+                    <MyThread agentConfig={activeAgent} editorLoaded={editorLoaded} openPdf={openPdf} />
                 </AssistantRuntimeProvider>
             </div>
         </aside>

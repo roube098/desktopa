@@ -32,6 +32,21 @@ const {
   isOnlyOfficeEditorRequest,
 } = require("./lib/onlyoffice-editor-bridge");
 
+const Store = require("electron-store");
+const pdfParse = require("pdf-parse");
+
+const pdfStore = new Store({
+  name: "excelor-pdf",
+  defaults: {
+    documentSpecificData: {},
+  },
+});
+
+function sanitizePdfStorePath(filePath) {
+  const s = typeof filePath === "string" ? filePath : (filePath?.path && typeof filePath.path === "string" ? filePath.path : "");
+  return s.replace(/\./g, "_").trim() || null;
+}
+
 const ROOT = path.resolve(__dirname, "..");
 const WORKSPACE_DIR = path.join(require("os").homedir(), "Documents", "My Workspace");
 const ONLYOFFICE_EXAMPLE_FILES_ROOT = path.join(
@@ -1588,6 +1603,7 @@ function initExcelorRuntimes() {
             ...getBrowserBridgeEnv(),
             ...skillsEnv,
             EXCELOR_RUNTIME_SCOPE: scope,
+            EXCELOR_WORKSPACE_DIR: WORKSPACE_DIR,
           },
         };
       },
@@ -1710,6 +1726,88 @@ function setupIPC() {
       shell.openExternal(url);
     }
     return { success: true };
+  });
+
+  // PDF viewer: read file from disk (returns base64)
+  ipcMain.handle("pdf:readFile", async (_event, filePath) => {
+    const pathString = typeof filePath === "string" ? filePath : (filePath?.path && typeof filePath.path === "string" ? filePath.path : "");
+    if (!pathString || !fs.existsSync(pathString)) {
+      throw new Error("PDF file not found");
+    }
+    const data = fs.readFileSync(pathString);
+    return data.toString("base64");
+  });
+
+  // PDF viewer: get highlights for a document
+  ipcMain.handle("pdf:getDocumentHighlights", async (_event, filePath) => {
+    const key = sanitizePdfStorePath(filePath);
+    if (!key) return [];
+    const docData = pdfStore.get(`documentSpecificData.${key}`, { highlights: [] });
+    return docData.highlights || [];
+  });
+
+  // PDF viewer: save highlights for a document
+  ipcMain.handle("pdf:saveDocumentHighlights", async (_event, filePath, highlights) => {
+    const key = sanitizePdfStorePath(filePath);
+    if (!key || !Array.isArray(highlights)) return false;
+    pdfStore.set(`documentSpecificData.${key}.highlights`, highlights);
+    return true;
+  });
+
+  // PDF viewer: get/save last viewed page
+  ipcMain.handle("pdf:getLastViewedPage", async (_event, filePath) => {
+    const key = sanitizePdfStorePath(filePath);
+    if (!key) return 1;
+    const docData = pdfStore.get(`documentSpecificData.${key}`, {});
+    return docData.lastViewedPage ?? 1;
+  });
+
+  ipcMain.handle("pdf:saveLastViewedPage", async (_event, filePath, pageNumber) => {
+    const key = sanitizePdfStorePath(filePath);
+    if (!key) return false;
+    pdfStore.set(`documentSpecificData.${key}.lastViewedPage`, pageNumber);
+    return true;
+  });
+
+  // PDF text extraction for attachments / agent (by path)
+  ipcMain.handle("pdf:extractText", async (_event, filePath) => {
+    const pathString = typeof filePath === "string" ? filePath : (filePath?.path && typeof filePath.path === "string" ? filePath.path : "");
+    if (!pathString || !fs.existsSync(pathString)) {
+      return { error: "PDF file not found" };
+    }
+    const ext = path.extname(pathString).toLowerCase();
+    if (ext !== ".pdf") {
+      return { error: "File is not a PDF" };
+    }
+    try {
+      const dataBuffer = fs.readFileSync(pathString);
+      const data = await pdfParse(dataBuffer);
+      return { text: data.text || "", pageCount: data.numpages };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // PDF text extraction from buffer (for file picker / drag-drop when no path)
+  ipcMain.handle("pdf:extractTextFromBuffer", async (_event, base64) => {
+    if (typeof base64 !== "string" || !base64) {
+      return { error: "Invalid base64 data" };
+    }
+    const os = require("os");
+    const tmpDir = os.tmpdir();
+    const tmpPath = path.join(tmpDir, `excelor-pdf-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.pdf`);
+    try {
+      const buf = Buffer.from(base64, "base64");
+      fs.writeFileSync(tmpPath, buf);
+      const data = await pdfParse(buf);
+      return { text: data.text || "", pageCount: data.numpages };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch (_) {}
+    }
   });
 
   ipcMain.handle("excelor-bootstrap", (_event, scopeOrPayload) => {
@@ -1905,6 +2003,9 @@ function setupIPC() {
       }
 
       const ext = path.extname(targetPath).toLowerCase();
+      if (ext === ".pdf") {
+        return { success: true, mode: "pdf", path: targetPath };
+      }
       if (ONLYOFFICE_WORKSPACE_EXTS.has(ext)) {
         const opened = await openWorkspaceFileInEditor(targetPath);
         return { success: true, mode: "editor", url: opened.editorUrl };

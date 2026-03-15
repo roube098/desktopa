@@ -8,9 +8,10 @@ import {
     type Toolkit,
     Tools
 } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/store";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC } from "react";
+import { type FC, useRef, useCallback, createContext, useContext } from "react";
 import { Citation } from "./tool-ui/citation";
 import { safeParseSerializableCitation } from "./tool-ui/citation/schema";
 import { makeAssistantToolUI } from "@assistant-ui/react";
@@ -18,6 +19,8 @@ import type { AgentConfig } from "../types/agent-types";
 import { ComposerModelSelector } from "./ComposerModelSelector";
 import { QuestionFlow } from "./tool-ui/question-flow";
 import { safeParseSerializableQuestionFlow } from "./tool-ui/question-flow/schema";
+
+const OpenPdfContext = createContext<((path: string) => void) | null>(null);
 
 export const CitationUI = makeAssistantToolUI({
     toolName: "showCitation",
@@ -80,8 +83,70 @@ export const QuestionFlowUI = makeAssistantToolUI({
     }
 });
 
+/* ── @pdf mention: when user types @pdf, offer to attach a PDF ── */
+const PdfMentionTrigger: FC = () => {
+    const aui = useAui();
+    const openPdf = useContext(OpenPdfContext);
+    const composerText = useAuiState((s) => (s.composer.isEditing ? s.composer.text : ""));
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const showTrigger = /\@pdf\b/i.test(composerText);
+
+    const handleAttachPdf = useCallback(() => {
+        fileInputRef.current?.click();
+    }, []);
+
+    const handleFileChange = useCallback(
+        async (e: React.ChangeEvent<HTMLInputElement>) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            try {
+                await aui.composer().addAttachment(file);
+                const current = aui.composer().getState().text;
+                const next = current.replace(/\s*@pdf\s*/gi, " ").trim();
+                aui.composer().setText(next);
+                const path = (file as File & { path?: string }).path;
+                if (path && openPdf) openPdf(path);
+            } catch (err) {
+                console.error("Failed to add PDF attachment:", err);
+            }
+        },
+        [aui, openPdf],
+    );
+
+    if (!showTrigger) return null;
+    return (
+        <>
+            <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                className="aui-composer-pdf-input-hidden"
+                style={{ position: "absolute", opacity: 0, width: 0, height: 0, pointerEvents: "none" }}
+                aria-hidden
+                onChange={handleFileChange}
+            />
+            <button
+                type="button"
+                className="aui-composer-pdf-mention-trigger"
+                onClick={handleAttachPdf}
+                aria-label="Attach PDF for @pdf"
+            >
+                Attach PDF
+            </button>
+        </>
+    );
+};
+
 /* ── Attachment UI ────────────────────────────────────────── */
 const AttachmentUI: FC = () => {
+    const openPdf = useContext(OpenPdfContext);
+    const attachment = useAuiState((s) => s.attachment);
+    const name = attachment?.name ?? "";
+    const file = attachment && "file" in attachment ? (attachment as { file?: File & { path?: string } }).file : undefined;
+    const isPdf = name.toLowerCase().endsWith(".pdf") || (attachment?.contentType ?? "").toLowerCase().includes("pdf");
+    const pdfPath = file?.path;
+
     return (
         <AttachmentPrimitive.Root className="aui-attachment-root">
             <div className="aui-attachment-thumb">
@@ -89,6 +154,17 @@ const AttachmentUI: FC = () => {
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                     <polyline points="14 2 14 8 20 8"></polyline>
                 </svg>
+
+                {isPdf && pdfPath && openPdf && (
+                    <button
+                        type="button"
+                        className="aui-attachment-open-pdf"
+                        onClick={() => openPdf(pdfPath)}
+                        title="Open in viewer"
+                    >
+                        Open in viewer
+                    </button>
+                )}
 
                 <AttachmentPrimitive.Remove asChild>
                     <button className="aui-attachment-remove" title="Remove attachment">
@@ -107,10 +183,12 @@ const AttachmentUI: FC = () => {
 interface MyThreadProps {
     agentConfig?: AgentConfig;
     editorLoaded?: boolean;
+    openPdf?: (path: string) => void;
 }
 
-export const MyThread: FC<MyThreadProps> = ({ agentConfig, editorLoaded }) => {
+export const MyThread: FC<MyThreadProps> = ({ agentConfig, editorLoaded, openPdf }) => {
     return (
+        <OpenPdfContext.Provider value={openPdf ?? null}>
         <ThreadPrimitive.Root className="aui-thread-root">
             <CitationUI />
             <QuestionFlowUI />
@@ -154,6 +232,7 @@ export const MyThread: FC<MyThreadProps> = ({ agentConfig, editorLoaded }) => {
                                 </button>
                             </ComposerPrimitive.AddAttachment>
 
+                            <PdfMentionTrigger />
                             <ComposerModelSelector />
 
                             {agentConfig && (
@@ -190,6 +269,7 @@ export const MyThread: FC<MyThreadProps> = ({ agentConfig, editorLoaded }) => {
                 </SelectionToolbarPrimitive.Quote>
             </SelectionToolbarPrimitive.Root>
         </ThreadPrimitive.Root>
+        </OpenPdfContext.Provider>
     );
 };
 
