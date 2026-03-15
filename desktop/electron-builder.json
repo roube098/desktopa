@@ -1,0 +1,47 @@
+{
+    "appId": "com.spreadsheet-ai.agent",
+    "productName": "Excelor",
+    "directories": {
+        "output": "dist"
+    },
+    "files": [
+        "main.js",
+        "preload.js",
+        "browser-preload.js",
+        "lib/**/*",
+        "assets/**/*"
+    ],
+    "extraResources": [
+        {
+            "from": "vendor/bun/win32-x64",
+            "to": "vendor/bun/win32-x64",
+            "filter": [
+                "bun.exe",
+                "version.txt"
+            ]
+        },
+        {
+            "from": "../excelor",
+            "to": "excelor",
+            "filter": [
+                "package.json",
+                "bun.lock",
+                ".env.example",
+                "src/**/*",
+                "node_modules/**/*"
+            ]
+        }
+    ],
+    "win": {
+        "target": [
+            "nsis"
+        ],
+        "icon": "assets/icon.png"
+    },
+    "nsis": {
+        "oneClick": false,
+        "allowToChangeInstallationDirectory": true,
+        "createDesktopShortcut": true,
+        "createStartMenuShortcut": true
+    }
+}

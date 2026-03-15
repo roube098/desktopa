@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Spreadsheet AI Agent</title>
+  <link rel="stylesheet" href="https://onlyoffice.github.io/sdkjs-plugins/v1/plugins.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>Spreadsheet AI Agent</h1>
+      <p>Plan with AI, execute with ONLYOFFICE API.</p>
+    </header>
+
+    <label for="backendUrl">Backend URL</label>
+    <input id="backendUrl" type="text" value="http://localhost:8090" />
+
+    <label for="prompt">Instruction</label>
+    <textarea id="prompt" rows="8" placeholder="Example: Build a monthly budget table starting at A1 with headers Category, Planned, Actual."></textarea>
+
+    <div class="row">
+      <button id="planBtn" class="primary">Generate Plan</button>
+      <button id="applyBtn" disabled>Apply to Sheet</button>
+      <button id="clearBtn">Clear</button>
+    </div>
+
+    <section>
+      <h2>Agent Message</h2>
+      <pre id="message"></pre>
+    </section>
+
+    <section>
+      <h2>Planned Actions</h2>
+      <pre id="actions"></pre>
+    </section>
+  </main>
+
+  <script src="https://onlyoffice.github.io/sdkjs-plugins/v1/plugins.js"></script>
+  <script src="scripts/presentation-bridge-core.js"></script>
+  <script src="scripts/code.js"></script>
+</body>
+</html>

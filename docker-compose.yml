@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: spreadsheet-ai-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    ports:
+      - "${BACKEND_PORT:-8090}:8090"
+
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    container_name: spreadsheet-ai-onlyoffice
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: "false"
+      EXAMPLE_ENABLED: "true"
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
+      ALLOW_META_IP_ADDRESS: "true"
+      ONLYOFFICE_PORT: "${ONLYOFFICE_PORT:-8080}"
+    ports:
+      - "${ONLYOFFICE_PORT:-8080}:80"
+    volumes:
+      - ./plugin:/var/www/onlyoffice/documentserver/sdkjs-plugins/spreadsheet-ai-agent
+      - ./plugin-bridge:/var/www/onlyoffice/documentserver/sdkjs-plugins/presentation-ai-bridge
+      - ./onlyoffice-data/logs:/var/log/onlyoffice
+      - ./onlyoffice-data/data:/var/www/onlyoffice/Data
+      - ./onlyoffice-data/lib:/var/lib/onlyoffice
+      - ./onlyoffice-data/db:/var/lib/postgresql
+      - ./scripts/fix-nginx-port.sh:/usr/local/bin/fix-nginx-port.sh:ro
+    entrypoint: ["/bin/bash", "/usr/local/bin/fix-nginx-port.sh"]
