@@ -84,6 +84,8 @@ interface ExcelorContext {
     documentContext: string;
     editorLoaded: boolean;
     editorUrl?: string;
+    editorFrameStatus?: 'idle' | 'assigned' | 'ready' | 'failed';
+    editorFrameMessage?: string;
     resetThread?: boolean;
     scope?: ExcelorScope;
 }

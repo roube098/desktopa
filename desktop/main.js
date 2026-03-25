@@ -1432,6 +1432,13 @@ async function invokeOnlyOfficeTool(request) {
     return { success: false, message: "Main window is not available." };
   }
 
+  if (String(request?.contextType || "").trim() === "presentation") {
+    return {
+      success: false,
+      message: "The legacy OnlyOffice presentation automation bridge has been removed. Use Dexter PowerPoint tools to generate and edit decks.",
+    };
+  }
+
   const requestId = `excelor-tool-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   return await new Promise((resolve) => {

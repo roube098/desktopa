@@ -7,21 +7,12 @@ import { LeftSidebar } from './components/LeftSidebar';
 import { MyThread } from './components/MyThread';
 import { Settings } from './components/Settings';
 import { ArrowLeft, ArrowRight, RotateCw, X, ExternalLink } from 'lucide-react';
-import { executeAgentTool, type EditorCommand } from './lib/editor-tools';
-import type { ToolExecutionResult } from './types/agent-types';
 import { PDFViewer, type PDFViewerRef, type PdfHighlightLocation } from './components/PDFViewer';
-import {
-    buildOnlyOfficeToolTimeoutResult,
-    getOnlyOfficeToolTimeoutMs,
-    normalizeOnlyOfficeToolResult,
-} from './lib/presentation-tool-timeouts';
 type CenterMode = 'dashboard' | 'browser' | 'editor' | 'pdf' | 'settings';
 type EditorFrameLoadStatus = 'idle' | 'assigned' | 'ready' | 'failed';
 
 const DEFAULT_BROWSER_URL = 'https://www.google.com';
 const MAIN_SCOPE: ExcelorScope = 'main';
-const PRESENTATION_BRIDGE_READY_WAIT_MS = 2200;
-const PRESENTATION_BRIDGE_READY_POLL_MS = 120;
 const EXCELOR_DEFAULT_TURN_TIMEOUT_MS = 120_000;
 const EXCELOR_PRESENTATION_TURN_TIMEOUT_MS = 300_000;
 
@@ -41,8 +32,6 @@ export default function App() {
     const [editorUrl, setEditorUrl] = useState('');
     const [editorFrameStatus, setEditorFrameStatus] = useState<EditorFrameLoadStatus>('idle');
     const [editorFrameMessage, setEditorFrameMessage] = useState('');
-    const [presentationBridgeWarning, setPresentationBridgeWarning] = useState('');
-    const [isPresentationBridgeReady, setIsPresentationBridgeReady] = useState(false);
     const [documentContext, setDocumentContext] = useState('spreadsheet');
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const editorFrameHandshakeTimeoutRef = useRef<number | null>(null);
@@ -73,24 +62,13 @@ export default function App() {
     const addressFocusRef = useRef(false);
     const browserHostRef = useRef<HTMLDivElement>(null);
     const browserToolActiveRef = useRef(false);
-    const presentationBridgeReadyRef = useRef(false);
     const documentContextRef = useRef(documentContext);
     const editorUrlRef = useRef(editorUrl);
-    const pendingPresentationToolRequestsRef = useRef(new Map<string, { resolve: (result: ToolExecutionResult) => void; timeoutId: number; toolName: string }>());
     const browserToolRestoreStateRef = useRef<{ centerMode: CenterMode; showSettings: boolean; isRightOpen: boolean }>({
         centerMode: 'dashboard',
         showSettings: false,
         isRightOpen: true,
     });
-
-    const clearPendingPresentationToolRequests = useCallback((message: string) => {
-        const pending = pendingPresentationToolRequestsRef.current;
-        pending.forEach((entry) => {
-            window.clearTimeout(entry.timeoutId);
-            entry.resolve({ success: false, message });
-        });
-        pending.clear();
-    }, []);
 
     const clearEditorFrameHandshake = useCallback(() => {
         if (editorFrameHandshakeTimeoutRef.current !== null) {
@@ -105,43 +83,12 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        presentationBridgeReadyRef.current = isPresentationBridgeReady;
-    }, [isPresentationBridgeReady]);
-
-    useEffect(() => {
         documentContextRef.current = documentContext;
     }, [documentContext]);
 
     useEffect(() => {
         editorUrlRef.current = editorUrl;
     }, [editorUrl]);
-
-    const buildPresentationToolContext = useCallback(() => ({
-        documentContext: documentContextRef.current,
-        editorLoaded: editorFrameStatus === 'ready',
-        editorUrl: editorUrlRef.current,
-        editorFrameStatus,
-        editorFrameMessage,
-        presentationBridgeReady: presentationBridgeReadyRef.current,
-    }), [editorFrameStatus, editorFrameMessage]);
-
-    const waitForPresentationBridgeReady = useCallback(async () => {
-        if (presentationBridgeReadyRef.current) {
-            return true;
-        }
-
-        const startedAt = Date.now();
-        while (Date.now() - startedAt < PRESENTATION_BRIDGE_READY_WAIT_MS) {
-            await new Promise<void>((resolve) => {
-                window.setTimeout(resolve, PRESENTATION_BRIDGE_READY_POLL_MS);
-            });
-            if (presentationBridgeReadyRef.current) {
-                return true;
-            }
-        }
-
-        return presentationBridgeReadyRef.current;
-    }, []);
 
     const handleEditorFrameLoad = useCallback(() => {
         setEditorFrameStatus((current) => {
@@ -159,88 +106,8 @@ export default function App() {
 
     const handleEditorFrameError = useCallback(() => {
         clearEditorFrameHandshake();
-        clearPendingPresentationToolRequests('The OnlyOffice editor failed before the presentation bridge returned a result.');
-        setIsPresentationBridgeReady(false);
         setEditorFrameState('failed', 'The OnlyOffice editor frame failed to load.');
-    }, [clearEditorFrameHandshake, clearPendingPresentationToolRequests, setEditorFrameState]);
-
-    const dispatchPresentationToolCommand = useCallback(async (
-        requestId: string,
-        toolName: string,
-        command: EditorCommand,
-    ): Promise<ToolExecutionResult> => {
-        if (editorFrameStatus !== 'ready') {
-            return { success: false, message: 'OnlyOffice editor is still loading.' };
-        }
-
-        if (!presentationBridgeReadyRef.current) {
-            await waitForPresentationBridgeReady();
-        }
-
-        const targetWindow = iframeRef.current?.contentWindow;
-        if (!targetWindow) {
-            return { success: false, message: 'Editor is not available - open a presentation first.' };
-        }
-
-        const request = { contextType: 'presentation', toolName };
-        const timeoutMs = getOnlyOfficeToolTimeoutMs(request, buildPresentationToolContext());
-
-        return await new Promise<ToolExecutionResult>((resolve) => {
-            const timeoutId = window.setTimeout(() => {
-                pendingPresentationToolRequestsRef.current.delete(requestId);
-                const timeoutResult = buildOnlyOfficeToolTimeoutResult(
-                    request,
-                    buildPresentationToolContext(),
-                    timeoutMs,
-                );
-                resolve({
-                    success: timeoutResult.success,
-                    message:
-                        typeof timeoutResult.message === 'string' && timeoutResult.message.trim()
-                            ? timeoutResult.message
-                            : 'Timed out waiting for the OnlyOffice presentation bridge.',
-                    data: timeoutResult.data,
-                });
-            }, timeoutMs);
-
-            pendingPresentationToolRequestsRef.current.set(requestId, { resolve, timeoutId, toolName });
-
-            try {
-                targetWindow.postMessage(
-                    {
-                        type: command.messageType,
-                        requestId,
-                        actions: command.actions,
-                        action: command.action,
-                        params: command.params,
-                    },
-                    '*',
-                );
-            } catch (err) {
-                window.clearTimeout(timeoutId);
-                pendingPresentationToolRequestsRef.current.delete(requestId);
-                resolve({
-                    success: false,
-                    message: `Cannot reach the presentation bridge: ${err instanceof Error ? err.message : String(err)}`,
-                    data: {
-                        relayMode: 'host-postMessage',
-                        retryAttempts: 0,
-                    },
-                });
-            }
-        });
-    }, [editorFrameStatus, waitForPresentationBridgeReady, buildPresentationToolContext]);
-
-    const dispatchToolCommandToEditor = useCallback(async (
-        request: ExcelorSubagentToolRequest,
-        command: EditorCommand,
-    ): Promise<ToolExecutionResult> => {
-        if (request.contextType !== 'presentation') {
-            return { success: false, message: 'Automation bridge unavailable for this editor context.' };
-        }
-
-        return await dispatchPresentationToolCommand(request.requestId, request.toolName, command);
-    }, [dispatchPresentationToolCommand]);
+    }, [clearEditorFrameHandshake, setEditorFrameState]);
 
     const excelorAdapters = useMemo(
         () => ({
@@ -610,17 +477,15 @@ export default function App() {
         if (!window.electronAPI) return;
 
         return window.electronAPI.onExcelorApplySubagentTool((request: ExcelorSubagentToolRequest) => {
-            void (async () => {
-                const result = await executeAgentTool(
-                    request.contextType,
-                    request.toolName,
-                    request.args || {},
-                    (command) => dispatchToolCommandToEditor(request, command),
-                );
-                window.electronAPI.respondExcelorSubagentTool(request.requestId, result);
-            })();
+            const message = request.contextType === 'presentation'
+                ? 'The legacy OnlyOffice presentation automation bridge has been removed. Use Dexter PowerPoint tools to generate and edit decks.'
+                : 'Embedded OnlyOffice editor automation is unavailable in this desktop renderer.';
+            window.electronAPI.respondExcelorSubagentTool(request.requestId, {
+                success: false,
+                message,
+            });
         });
-    }, [dispatchToolCommandToEditor]);
+    }, []);
 
     useEffect(() => {
         const handleMessage = (event: MessageEvent) => {
@@ -629,11 +494,7 @@ export default function App() {
             const payload = event.data as {
                 type?: string;
                 documentType?: string;
-                bridgeGuid?: string;
-                requestId?: string;
-                success?: boolean;
                 message?: string;
-                data?: unknown;
             };
 
             if (!payload || typeof payload.type !== 'string') {
@@ -646,70 +507,25 @@ export default function App() {
                 return;
             }
 
-            if (payload.type === 'presentation-bridge-ready') {
-                setIsPresentationBridgeReady(true);
-                setPresentationBridgeWarning('');
-                return;
-            }
-
             if (payload.type === 'onlyoffice-editor-error') {
                 clearEditorFrameHandshake();
-                clearPendingPresentationToolRequests('The OnlyOffice editor failed before the presentation bridge returned a result.');
-                setIsPresentationBridgeReady(false);
                 setEditorFrameState(
                     'failed',
                     typeof payload.message === 'string' && payload.message.trim()
                         ? payload.message
                         : 'OnlyOffice editor failed to initialize.',
                 );
-                return;
             }
-
-            if (payload.type !== 'tool-result' || typeof payload.requestId !== 'string') {
-                return;
-            }
-
-            if (typeof payload.message === 'string' && /presentation bridge plugin is not available/i.test(payload.message)) {
-                setPresentationBridgeWarning(payload.message);
-            }
-
-            const pending = pendingPresentationToolRequestsRef.current.get(payload.requestId);
-            if (!pending) return;
-
-            window.clearTimeout(pending.timeoutId);
-            pendingPresentationToolRequestsRef.current.delete(payload.requestId);
-            const normalized = normalizeOnlyOfficeToolResult(
-                {
-                    success: payload.success === true,
-                    message: typeof payload.message === 'string'
-                        ? payload.message
-                        : (payload.success === true ? 'Presentation tool completed.' : 'Presentation tool failed.'),
-                    data: payload.data,
-                },
-                { contextType: 'presentation', toolName: pending.toolName || 'unknown' },
-                buildPresentationToolContext(),
-            );
-            pending.resolve({
-                success: normalized.success === true,
-                message: typeof normalized.message === 'string'
-                    ? normalized.message
-                    : (normalized.success === true ? 'Presentation tool completed.' : 'Presentation tool failed.'),
-                data: normalized.data,
-            });
         };
 
         window.addEventListener('message', handleMessage);
         return () => {
             window.removeEventListener('message', handleMessage);
-            clearPendingPresentationToolRequests('The presentation bridge listener was removed.');
         };
-    }, [clearEditorFrameHandshake, clearPendingPresentationToolRequests, setEditorFrameState, buildPresentationToolContext]);
+    }, [clearEditorFrameHandshake, setEditorFrameState]);
 
     useEffect(() => {
-        clearPendingPresentationToolRequests('The editor changed before the presentation bridge returned a result.');
         clearEditorFrameHandshake();
-        setPresentationBridgeWarning('');
-        setIsPresentationBridgeReady(false);
 
         if (!editorUrl) {
             setEditorFrameState('idle');
@@ -720,7 +536,7 @@ export default function App() {
         editorFrameHandshakeTimeoutRef.current = window.setTimeout(() => {
             setEditorFrameState('failed', 'OnlyOffice editor did not complete its startup handshake.');
         }, 12000);
-    }, [editorUrl, clearEditorFrameHandshake, clearPendingPresentationToolRequests, setEditorFrameState]);
+    }, [editorUrl, clearEditorFrameHandshake, setEditorFrameState]);
 
     useEffect(() => {
         return () => {
@@ -813,9 +629,7 @@ export default function App() {
     };
 
     const closeEditor = () => {
-        clearPendingPresentationToolRequests('The editor was closed before the presentation bridge returned a result.');
         clearEditorFrameHandshake();
-        setPresentationBridgeWarning('');
         setEditorFrameState('idle');
         setEditorUrl('');
         setCenterMode('dashboard');
@@ -868,7 +682,7 @@ export default function App() {
                                 <line x1="6" y1="6" x2="18" y2="18"></line>
                             </svg>
                         </button>
-                        {(editorFrameMessage || presentationBridgeWarning) && (
+                        {editorFrameMessage && (
                             <div
                                 style={{
                                     position: 'absolute',
@@ -896,22 +710,6 @@ export default function App() {
                                         }}
                                     >
                                         {editorFrameMessage}
-                                    </div>
-                                )}
-                                {presentationBridgeWarning && (
-                                    <div
-                                        style={{
-                                            padding: '10px 12px',
-                                            borderRadius: 10,
-                                            background: 'rgba(120, 53, 15, 0.92)',
-                                            border: '1px solid rgba(251, 191, 36, 0.55)',
-                                            color: '#fef3c7',
-                                            fontSize: 13,
-                                            lineHeight: 1.45,
-                                            boxShadow: '0 12px 30px rgba(120, 53, 15, 0.25)',
-                                        }}
-                                    >
-                                        {presentationBridgeWarning}
                                     </div>
                                 )}
                             </div>

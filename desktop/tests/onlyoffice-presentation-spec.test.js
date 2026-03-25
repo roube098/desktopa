@@ -1,4 +1,4 @@
-﻿const test = require("node:test");
+const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const spec = require("../../shared/onlyoffice-presentation-spec.json");
@@ -7,7 +7,6 @@ const {
   getOnlyOfficePresentationDescription,
   getOnlyOfficePresentationTools,
 } = require("../lib/onlyoffice-presentation-spec");
-const { getOnlyOfficeSubagent } = require("../lib/onlyoffice-subagents");
 
 test("desktop presentation helpers mirror the shared presentation spec", () => {
   const helperTools = getOnlyOfficePresentationTools();
@@ -18,17 +17,8 @@ test("desktop presentation helpers mirror the shared presentation spec", () => {
   assert.equal(getOnlyOfficePresentationDescription(), spec.agent.description);
   const prompt = buildOnlyOfficePresentationPrompt();
   assert.match(prompt, /## Role/);
-  assert.match(prompt, /createFile initializes a starter file template only/i);
-  assert.match(prompt, /do not finalize after createFile/i);
-  assert.match(prompt, /run verifySlides before finalizing/i);
-  assert.match(prompt, /blank\/template presentation/i);
-});
-
-test("desktop onlyoffice subagent presentation tools come from the shared spec", () => {
-  const presentation = getOnlyOfficeSubagent("presentation");
-  assert.ok(presentation);
-  assert.deepEqual(
-    presentation.tools.map((tool) => tool.name),
-    ["createFile", "exportCurrentFile", ...spec.tools.map((tool) => tool.name)],
-  );
+  assert.match(prompt, /PptxGenJS/i);
+  assert.match(prompt, /There is no live OnlyOffice editor API in this path/i);
+  assert.match(prompt, /ALWAYS run verifySlides/i);
+  assert.match(prompt, /Blank\/new presentation/i);
 });

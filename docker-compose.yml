@@ -23,7 +23,6 @@ services:
       - "${ONLYOFFICE_PORT:-8080}:80"
     volumes:
       - ./plugin:/var/www/onlyoffice/documentserver/sdkjs-plugins/spreadsheet-ai-agent
-      - ./plugin-bridge:/var/www/onlyoffice/documentserver/sdkjs-plugins/presentation-ai-bridge
       - ./onlyoffice-data/logs:/var/log/onlyoffice
       - ./onlyoffice-data/data:/var/www/onlyoffice/Data
       - ./onlyoffice-data/lib:/var/lib/onlyoffice

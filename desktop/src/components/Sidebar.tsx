@@ -18,7 +18,6 @@ interface SidebarProps {
     editorLoaded: boolean;
     editorFrameStatus?: 'idle' | 'assigned' | 'ready' | 'failed';
     editorFrameMessage?: string;
-    presentationBridgeReady?: boolean;
     isOpen: boolean;
     forceHidden?: boolean;
     showPdfContextPrompt?: boolean;
@@ -49,7 +48,6 @@ export function Sidebar({
     editorLoaded,
     editorFrameStatus = 'idle',
     editorFrameMessage = '',
-    presentationBridgeReady = false,
     isOpen,
     forceHidden = false,
     showPdfContextPrompt = false,
@@ -85,9 +83,8 @@ export function Sidebar({
             editorUrl,
             editorFrameStatus,
             editorFrameMessage,
-            presentationBridgeReady: documentContext === 'presentation' ? presentationBridgeReady : false,
         });
-    }, [documentContext, editorFrameMessage, editorFrameStatus, editorLoaded, editorUrl, presentationBridgeReady]);
+    }, [documentContext, editorFrameMessage, editorFrameStatus, editorLoaded, editorUrl]);
 
     useEffect(() => {
         if (!window.electronAPI) return;
@@ -103,10 +100,9 @@ export function Sidebar({
             editorUrl,
             editorFrameStatus,
             editorFrameMessage,
-            presentationBridgeReady: documentContext === 'presentation' ? presentationBridgeReady : false,
             resetThread: true,
         });
-    }, [documentContext, editorFrameMessage, editorFrameStatus, editorLoaded, editorUrl, presentationBridgeReady]);
+    }, [documentContext, editorFrameMessage, editorFrameStatus, editorLoaded, editorUrl]);
 
     const adapters = useMemo(() => ({
         attachments: new CompositeAttachmentAdapter([

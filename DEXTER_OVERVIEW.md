@@ -51,14 +51,14 @@ Deck-generation entry points:
 - presentation mutation tools: populate or change the in-memory slide model
 - `verifySlides`: validate slide geometry before the run finishes
 
-## 5. Current Path Vs Adjacent Legacy Bridge
+## 5. Current Path Vs Adjacent Bridge Surface
 
 For "generate a PowerPoint," the current path to understand is the PptxGenJS session in [`dexter/src/lib/pptx-tool-engine.ts`](./dexter/src/lib/pptx-tool-engine.ts). That is the file-generation pipeline Dexter uses today.
 
-The desktop app still ships an embedded OnlyOffice presentation bridge and plugin stack in files such as [`desktop/lib/onlyoffice-editor-bridge.js`](./desktop/lib/onlyoffice-editor-bridge.js), [`plugin/scripts/presentation-bridge-core.js`](./plugin/scripts/presentation-bridge-core.js), and [`plugin-bridge/`](./plugin-bridge/). That bridge still matters for live editor automation and for the shared presentation contract, but it is not the same thing as Dexter's current PowerPoint-generation backend.
+The old OnlyOffice presentation bridge/plugin path has been removed. The shared presentation contract still exists in [`shared/onlyoffice-presentation-spec.json`](./shared/onlyoffice-presentation-spec.json), but presentation mutation now means Dexter's in-process PptxGenJS session rather than live slide-editor automation.
 
 In short:
 
 - spreadsheet/document/PDF editing tools still use the desktop bridge at `/editor/tool`
-- the desktop app still ships the OnlyOffice presentation bridge/plugin and the shared presentation spec
+- the shared presentation spec remains, but there is no separate embedded OnlyOffice presentation bridge/plugin path anymore
 - Dexter-generated PowerPoints currently come from the in-process PptxGenJS session, not from live OnlyOffice slide editing

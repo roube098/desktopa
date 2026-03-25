@@ -47,7 +47,6 @@
         var info = Asc.plugin.info;
         if (info.editorType === "cell" || info.editorType === "spreadsheet") return "spreadsheet";
         if (info.editorType === "word" || info.editorType === "document") return "document";
-        if (info.editorType === "slide" || info.editorType === "presentation") return "presentation";
         if (info.editorType === "pdf") return "pdf";
       }
     } catch (_) { }
@@ -151,18 +150,6 @@
 
     el.message.textContent = "Applying actions...";
 
-    if (editorType === "presentation" && window.PresentationBridgeCore) {
-      window.PresentationBridgeCore.executePresentationRequest(
-        { type: "apply-actions", actions: plannedActions },
-        function (result) {
-          el.message.textContent = result && result.success
-            ? "Actions applied successfully."
-            : (result && result.message) || "Presentation actions failed.";
-        }
-      );
-      return;
-    }
-
     Asc.scope.actions = plannedActions;
     Asc.scope.editorType = editorType;
 
@@ -235,23 +222,6 @@
             "document.insertPageBreak": "insert_page_break",
             "document.formatText": "format_text",
           }, "document.");
-        }
-
-        function normalizePresentationActionType(type) {
-          return normalizeByMap(type, {
-            addSlide: "add_slide",
-            setSlideText: "set_slide_text",
-            deleteSlide: "delete_slide",
-            addShape: "add_shape",
-            formatSlideText: "format_slide_text",
-            duplicateSlide: "duplicate_slide",
-            "presentation.addSlide": "add_slide",
-            "presentation.setSlideText": "set_slide_text",
-            "presentation.deleteSlide": "delete_slide",
-            "presentation.addShape": "add_shape",
-            "presentation.formatSlideText": "format_slide_text",
-            "presentation.duplicateSlide": "duplicate_slide",
-          }, "presentation.");
         }
 
         function normalizePdfActionType(type) {
@@ -615,110 +585,6 @@
           }
         }
 
-        // ─── PRESENTATION ACTIONS ───────────────────────
-        function applyPresentation(actions) {
-          var pres = Api.GetPresentation();
-
-          for (var i = 0; i < actions.length; i++) {
-            var a = actions[i] || {};
-            var type = normalizePresentationActionType(a.type);
-
-            if (type === "add_slide") {
-              var slide = Api.CreateSlide();
-              slide.RemoveAllObjects();
-              pres.AddSlide(slide);
-            } else if (type === "set_slide_title" || (type === "set_slide_text" && String(a.placeholder || "").toLowerCase() === "title")) {
-              var idx = parseInt(a.slideIndex, 10) || 0;
-              var sl = pres.GetSlideByIndex(idx);
-              if (sl) {
-                var titleShape = Api.CreateShape("rect", 600 * 36000, 56 * 36000);
-                titleShape.SetPosition(60 * 36000, 30 * 36000);
-                var titleContent = titleShape.GetDocContent();
-                var tPara = Api.CreateParagraph();
-                var tRun = Api.CreateRun();
-                tRun.AddText(String(a.title || ""));
-                tRun.SetFontSize(44);
-                tRun.SetBold(true);
-                tPara.AddElement(tRun);
-                titleContent.Push(tPara);
-                sl.AddObject(titleShape);
-              }
-            } else if (type === "set_slide_content" || type === "set_slide_text") {
-              var ci = parseInt(a.slideIndex, 10) || 0;
-              var cs = pres.GetSlideByIndex(ci);
-              if (cs) {
-                var contentShape = Api.CreateShape("rect", 600 * 36000, 300 * 36000);
-                contentShape.SetPosition(60 * 36000, 100 * 36000);
-                var cc = contentShape.GetDocContent();
-                var lines = String(a.content || "").split("\n");
-                for (var li = 0; li < lines.length; li++) {
-                  var lp = Api.CreateParagraph();
-                  lp.AddText(lines[li]);
-                  cc.Push(lp);
-                }
-                cs.AddObject(contentShape);
-              }
-            } else if (type === "add_shape") {
-              var si = parseInt(a.slideIndex, 10) || 0;
-              var targetSlide = pres.GetSlideByIndex(si);
-              if (!targetSlide) {
-                console.warn("[OnlyOffice plugin] add_shape target slide not found:", si);
-                continue;
-              }
-              var shapeWidth = (parseInt(a.width, 10) || 240) * 36000;
-              var shapeHeight = (parseInt(a.height, 10) || 120) * 36000;
-              var shape = Api.CreateShape(String(a.shapeType || "rect"), shapeWidth, shapeHeight);
-              var shapeX = (parseInt(a.x, 10) || 80) * 36000;
-              var shapeY = (parseInt(a.y, 10) || 120) * 36000;
-              shape.SetPosition(shapeX, shapeY);
-              var fillColor = String(a.fillColor || "").trim();
-              if (/^#[0-9a-f]{6}$/i.test(fillColor) && shape.SetFill) {
-                try {
-                  shape.SetFill(Api.CreateSolidFill(Api.CreateRGBColor(
-                    parseInt(fillColor.slice(1, 3), 16),
-                    parseInt(fillColor.slice(3, 5), 16),
-                    parseInt(fillColor.slice(5, 7), 16)
-                  )));
-                } catch (_shapeFillError) { }
-              }
-              targetSlide.AddObject(shape);
-            } else if (type === "format_slide_text") {
-              var fsi = parseInt(a.slideIndex, 10) || 0;
-              var fslide = pres.GetSlideByIndex(fsi);
-              if (!fslide) {
-                console.warn("[OnlyOffice plugin] format_slide_text target slide not found:", fsi);
-                continue;
-              }
-              var formatShape = Api.CreateShape("rect", 600 * 36000, 140 * 36000);
-              formatShape.SetPosition(60 * 36000, 420 * 36000);
-              var formatContent = formatShape.GetDocContent();
-              var formatPara = Api.CreateParagraph();
-              var formatRun = Api.CreateRun();
-              formatRun.AddText(String(a.text || a.placeholder || "Formatted text"));
-              if (a.bold) formatRun.SetBold(true);
-              if (a.italic) formatRun.SetItalic(true);
-              if (a.fontSize) formatRun.SetFontSize(parseInt(a.fontSize, 10) * 2);
-              if (a.fontColor && /^#[0-9a-f]{6}$/i.test(String(a.fontColor || "")) && formatRun.SetColor) {
-                try {
-                  formatRun.SetColor(Api.CreateRGBColor(
-                    parseInt(String(a.fontColor).slice(1, 3), 16),
-                    parseInt(String(a.fontColor).slice(3, 5), 16),
-                    parseInt(String(a.fontColor).slice(5, 7), 16)
-                  ));
-                } catch (_textColorError) { }
-              }
-              formatPara.AddElement(formatRun);
-              formatContent.Push(formatPara);
-              fslide.AddObject(formatShape);
-            } else if (type === "delete_slide" || type === "duplicate_slide") {
-              console.warn("[OnlyOffice plugin] Action requested but SDK bridge lacks a stable implementation:", type);
-            } else {
-              console.warn("[OnlyOffice plugin] Unknown presentation action type:", type);
-            }
-          }
-        }
-
-        // ─── PDF FORM ACTIONS ───────────────────────────
         function applyPdf(actions) {
           var doc = Api.GetDocument();
 
@@ -791,8 +657,6 @@
           applySpreadsheet(actions);
         } else if (edType === "document") {
           applyDocument(actions);
-        } else if (edType === "presentation") {
-          applyPresentation(actions);
         } else if (edType === "pdf") {
           applyPdf(actions);
         } else {
@@ -858,3 +722,5 @@
     this.executeCommand("close", "");
   };
 })();
+
+

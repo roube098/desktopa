@@ -20,7 +20,6 @@ Electron desktop app that combines a React UI, a local OnlyOffice editor (via Do
 | `dexter/` | Agent server/runtime (spawned by Electron via Bun) |
 | `backend/` | Flask backend for the planner API |
 | `plugin/` | OnlyOffice plugin (mounted into the container) |
-| `plugin-bridge/` | OnlyOffice plugin bridge scripts |
 | `shared/` | Shared specs (e.g. presentation schema) |
 | `scripts/` | Utility scripts (Docker, packaging, startup) |
 
