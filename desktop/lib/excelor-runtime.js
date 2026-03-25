@@ -47,6 +47,9 @@ class ExcelorRuntime extends EventEmitter {
     this.getContext = options.getContext || (() => ({}));
     this.getExecutionConfig = options.getExecutionConfig || (() => ({ modelId: null, env: {} }));
     this.invokeOnlyOfficeTool = options.invokeOnlyOfficeTool || null;
+    this.onOpenGeneratedPptx = typeof options.onOpenGeneratedPptx === "function"
+      ? options.onOpenGeneratedPptx
+      : null;
     this.thread = null;
     this.conversationId = newId("conv");
     this.rootDir = options.rootDir || path.resolve(__dirname, "..", "..");
@@ -280,10 +283,13 @@ class ExcelorRuntime extends EventEmitter {
     try {
       await this._ensureProcess(executionConfig.env || {});
 
-      const answer = await this._streamRun(prompt, executionConfig.modelId);
+      const finalRun = await this._streamRun(prompt, executionConfig.modelId);
+      const answer = finalRun.answer;
 
       const thread = this.bootstrap();
       if (thread.activeTurnId !== turnId) return; // Stale turn
+
+      await this._maybeOpenGeneratedPptx(finalRun.doneEvent);
 
       thread.messages.push({ id: newId("msg"), role: "assistant", text: answer, createdAt: nowIso() });
       thread.status = "idle";
@@ -324,7 +330,7 @@ class ExcelorRuntime extends EventEmitter {
 
   /**
    * POST /run to the Excelor server, consume the SSE stream,
-   * translate events to activity entries, return final answer.
+   * translate events to activity entries, and retain the final done event.
    */
   async _streamRun(prompt, modelId) {
     const res = await fetch(`http://localhost:${this.port}/run`, {
@@ -342,6 +348,7 @@ class ExcelorRuntime extends EventEmitter {
     const decoder = new TextDecoder();
     let buffer = "";
     let finalAnswer = "";
+    let finalDoneEvent = null;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -364,11 +371,106 @@ class ExcelorRuntime extends EventEmitter {
         this._handleAgentEvent(event);
         if (event.type === "done") {
           finalAnswer = event.answer || "";
+          finalDoneEvent = event;
         }
       }
     }
 
-    return finalAnswer || "Excelor did not return a response.";
+    return {
+      answer: finalAnswer || "Excelor did not return a response.",
+      doneEvent: finalDoneEvent,
+    };
+  }
+
+  _asRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : null;
+  }
+
+  _normalizeFormat(value) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (normalized === "ppt") return "pptx";
+    return normalized;
+  }
+
+  _parseToolCallResult(result) {
+    if (typeof result === "string") {
+      try {
+        return this._asRecord(JSON.parse(result));
+      } catch (_error) {
+        return null;
+      }
+    }
+    return this._asRecord(result);
+  }
+
+  _findGeneratedPptxPath(doneEvent) {
+    const payload = this._asRecord(doneEvent);
+    const toolCalls = Array.isArray(payload?.toolCalls) ? payload.toolCalls : [];
+
+    for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+      const toolCall = this._asRecord(toolCalls[index]);
+      if (normalizeText(toolCall?.tool) !== "createFile") continue;
+
+      const args = this._asRecord(toolCall?.args) || {};
+      const result = this._parseToolCallResult(toolCall?.result);
+      if (!result || result.success !== true) continue;
+
+      const data = this._asRecord(result.data) || {};
+      const format = this._normalizeFormat(data.format || args.format);
+      if (format !== "pptx") continue;
+
+      if (args.open === false || data.open === false) {
+        return null;
+      }
+
+      const absolutePath = normalizeText(data.absolutePath);
+      const workspacePath = normalizeText(data.workspacePath);
+      const candidatePath = absolutePath || workspacePath;
+      return candidatePath ? path.resolve(candidatePath) : null;
+    }
+
+    return null;
+  }
+
+  async _maybeOpenGeneratedPptx(doneEvent) {
+    if (!this.onOpenGeneratedPptx) {
+      return;
+    }
+
+    const payload = this._asRecord(doneEvent);
+    if (!payload || normalizeText(payload.reason)) {
+      return;
+    }
+
+    const targetPath = this._findGeneratedPptxPath(payload);
+    if (!targetPath) {
+      return;
+    }
+
+    const fileName = path.basename(targetPath);
+    try {
+      await this.onOpenGeneratedPptx(targetPath);
+      this.pushActivity({
+        id: newId("act"),
+        kind: "status",
+        status: "completed",
+        title: "Opened presentation in ONLYOFFICE",
+        detail: fileName,
+        createdAt: nowIso(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.pushActivity({
+        id: newId("act"),
+        kind: "status",
+        status: "failed",
+        title: "Failed to open generated presentation",
+        detail: shortText(`${fileName}: ${message}`, 320),
+        createdAt: nowIso(),
+      });
+    }
   }
 
   _handleAgentEvent(event) {

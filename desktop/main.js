@@ -1140,6 +1140,26 @@ async function openWorkspaceFileInEditor(filePath) {
   return { fileName, editorUrl };
 }
 
+async function openGeneratedPptxInOnlyOffice(filePath) {
+  await ensureWorkspaceDir();
+
+  const targetPath = path.resolve(String(filePath || ""));
+  if (!isPathInsideDirectory(WORKSPACE_DIR, targetPath)) {
+    throw new Error("Invalid workspace path.");
+  }
+
+  const stat = await fs.promises.stat(targetPath);
+  if (!stat.isFile()) {
+    throw new Error("The selected path is not a file.");
+  }
+
+  if (path.extname(targetPath).toLowerCase() !== ".pptx") {
+    throw new Error("Only generated .pptx files can be auto-opened.");
+  }
+
+  return await openWorkspaceFileInEditor(targetPath);
+}
+
 async function findTemplatePath(format) {
   const normalized = normalizeFormat(format);
   if (!normalized) {
@@ -1608,6 +1628,7 @@ function initExcelorRuntimes() {
         };
       },
       invokeOnlyOfficeTool: (request) => invokeOnlyOfficeTool({ ...request, scope }),
+      onOpenGeneratedPptx: (filePath) => openGeneratedPptxInOnlyOffice(filePath),
     });
 
     runtime.on("snapshot", (snapshot) => {
