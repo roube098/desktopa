@@ -281,7 +281,7 @@ test("postMessage bridge watchdog returns explicit timeout diagnostics", () => {
   assert.equal(finalMessage.type, "tool-result");
   assert.equal(finalMessage.success, false);
   assert.match(String(finalMessage.message || ""), /Timed out waiting for the OnlyOffice presentation bridge/i);
-  assert.equal(finalMessage.data.bridgeTimeoutMs, 5200);
+  assert.equal(finalMessage.data.bridgeTimeoutMs, 9000);
   assert.equal(finalMessage.data.relayMode, "postMessage");
 });
 

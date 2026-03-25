@@ -12,6 +12,7 @@ class DockerManager extends EventEmitter {
         this.status = { backend: "stopped", onlyoffice: "stopped" };
         this.ports = { backend: 8090, onlyoffice: 8080 };
         this._healthTimer = null;
+        this._exampleEnsurePromise = null;
     }
 
     getStatus() {
@@ -118,37 +119,24 @@ class DockerManager extends EventEmitter {
 
     _startHealthCheck() {
         this._stopHealthCheck();
-        let readyEmitted = false;
+        const readyState = { emitted: false };
+        let checkInFlight = false;
 
-        this._healthTimer = setInterval(async () => {
-            // Check backend
-            const backendOk = await this._httpCheck(
-                `http://localhost:${this.ports.backend}/api/health`,
-                "onlyoffice-spreadsheet-agent"
-            );
-            this._setStatus("backend", backendOk ? "ready" : "starting");
-
-            // Check ONLYOFFICE
-            const ooOk = await this._httpCheck(
-                `http://localhost:${this.ports.onlyoffice}/healthcheck`,
-                "true"
-            );
-            this._setStatus("onlyoffice", ooOk ? "ready" : "starting");
-
-            if (backendOk && ooOk && !readyEmitted) {
-                readyEmitted = true;
-
-                // Ensure example is started
-                try {
-                    await this._exec("docker", [
-                        "compose", "exec", "-T", "onlyoffice",
-                        "sh", "-lc", "supervisorctl start ds:example >/dev/null 2>&1 || true",
-                    ]);
-                } catch (_) { /* ignore */ }
-
-                this.emit("ready");
+        const runHealthCheck = async () => {
+            if (checkInFlight) return;
+            checkInFlight = true;
+            try {
+                await this._performHealthCheck(readyState);
+            } finally {
+                checkInFlight = false;
             }
+        };
+
+        this._healthTimer = setInterval(() => {
+            void runHealthCheck();
         }, 3000);
+
+        void runHealthCheck();
     }
 
     _stopHealthCheck() {
@@ -177,6 +165,97 @@ class DockerManager extends EventEmitter {
             req.on("error", () => resolve(false));
             req.on("timeout", () => { req.destroy(); resolve(false); });
         });
+    }
+
+    async _performHealthCheck(readyState = { emitted: false }) {
+        const backendOk = await this._httpCheck(
+            `http://localhost:${this.ports.backend}/api/health`,
+            "onlyoffice-spreadsheet-agent"
+        );
+        this._setStatus("backend", backendOk ? "ready" : "starting");
+
+        const onlyofficeHealthy = await this._httpCheck(
+            `http://localhost:${this.ports.onlyoffice}/healthcheck`,
+            "true"
+        );
+
+        let exampleReady = false;
+        if (onlyofficeHealthy) {
+            try {
+                exampleReady = await this._ensureOnlyOfficeExampleReady();
+            } catch (err) {
+                exampleReady = false;
+                this.emit("error", err);
+            }
+        }
+
+        this._setStatus("onlyoffice", onlyofficeHealthy && exampleReady ? "ready" : "starting");
+
+        if (backendOk && onlyofficeHealthy && exampleReady && !readyState.emitted) {
+            readyState.emitted = true;
+            this.emit("ready");
+        }
+    }
+
+    async _ensureOnlyOfficeExampleReady() {
+        if (this._exampleEnsurePromise) {
+            return await this._exampleEnsurePromise;
+        }
+
+        this._exampleEnsurePromise = (async () => {
+            if (await this._isOnlyOfficeExampleReady()) {
+                return true;
+            }
+
+            const status = await this._getOnlyOfficeExampleStatus();
+            if (!/\bRUNNING\b/.test(status)) {
+                await this._startOnlyOfficeExample();
+            }
+
+            for (let attempt = 0; attempt < 15; attempt += 1) {
+                if (await this._isOnlyOfficeExampleReady()) {
+                    return true;
+                }
+                await this._sleep(1000);
+            }
+
+            throw new Error("OnlyOffice example service did not become ready.");
+        })();
+
+        try {
+            return await this._exampleEnsurePromise;
+        } finally {
+            this._exampleEnsurePromise = null;
+        }
+    }
+
+    async _isOnlyOfficeExampleReady() {
+        return await this._httpCheck(
+            `http://localhost:${this.ports.onlyoffice}/example/`,
+            "<!DOCTYPE html"
+        );
+    }
+
+    async _getOnlyOfficeExampleStatus() {
+        try {
+            return await this._exec("docker", [
+                "exec", "spreadsheet-ai-onlyoffice",
+                "supervisorctl", "status", "ds:example",
+            ]);
+        } catch (err) {
+            return err && err.message ? err.message : String(err);
+        }
+    }
+
+    async _startOnlyOfficeExample() {
+        await this._exec("docker", [
+            "exec", "spreadsheet-ai-onlyoffice",
+            "supervisorctl", "start", "ds:example",
+        ]);
+    }
+
+    _sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     _findFreePort(preferred) {

@@ -1,0 +1,7 @@
+{"type":"init","content":"test query","timestamp":"2026-03-19T18:52:08.932Z"}
+{"type":"terminal","timestamp":"2026-03-19T18:52:08.940Z","status":"done","emptyAnswer":false,"answerPreview":"Hello world"}
+{"type":"init","content":"test query","timestamp":"2026-03-19T18:52:08.947Z"}
+{"type":"terminal","timestamp":"2026-03-19T18:52:08.954Z","status":"done","emptyAnswer":false,"answerPreview":"Fallback answer"}
+{"type":"init","content":"test query","timestamp":"2026-03-19T18:52:08.961Z"}
+{"type":"tool_result","timestamp":"2026-03-19T18:52:08.969Z","toolName":"echo_tool","args":{"input":"hello"},"result":"echo ok"}
+{"type":"terminal","timestamp":"2026-03-19T18:52:08.978Z","status":"done","emptyAnswer":false,"answerPreview":"tool result done"}

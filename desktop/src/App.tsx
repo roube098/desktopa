@@ -10,6 +10,11 @@ import { ArrowLeft, ArrowRight, RotateCw, X, ExternalLink } from 'lucide-react';
 import { executeAgentTool, type EditorCommand } from './lib/editor-tools';
 import type { ToolExecutionResult } from './types/agent-types';
 import { PDFViewer, type PDFViewerRef, type PdfHighlightLocation } from './components/PDFViewer';
+import {
+    buildOnlyOfficeToolTimeoutResult,
+    getOnlyOfficeToolTimeoutMs,
+    normalizeOnlyOfficeToolResult,
+} from './lib/presentation-tool-timeouts';
 type CenterMode = 'dashboard' | 'browser' | 'editor' | 'pdf' | 'settings';
 type EditorFrameLoadStatus = 'idle' | 'assigned' | 'ready' | 'failed';
 
@@ -17,6 +22,8 @@ const DEFAULT_BROWSER_URL = 'https://www.google.com';
 const MAIN_SCOPE: ExcelorScope = 'main';
 const PRESENTATION_BRIDGE_READY_WAIT_MS = 2200;
 const PRESENTATION_BRIDGE_READY_POLL_MS = 120;
+const EXCELOR_DEFAULT_TURN_TIMEOUT_MS = 120_000;
+const EXCELOR_PRESENTATION_TURN_TIMEOUT_MS = 300_000;
 
 function normalizeBrowserUrl(rawUrl: string): string {
     const trimmed = rawUrl.trim();
@@ -67,7 +74,9 @@ export default function App() {
     const browserHostRef = useRef<HTMLDivElement>(null);
     const browserToolActiveRef = useRef(false);
     const presentationBridgeReadyRef = useRef(false);
-    const pendingPresentationToolRequestsRef = useRef(new Map<string, { resolve: (result: ToolExecutionResult) => void; timeoutId: number }>());
+    const documentContextRef = useRef(documentContext);
+    const editorUrlRef = useRef(editorUrl);
+    const pendingPresentationToolRequestsRef = useRef(new Map<string, { resolve: (result: ToolExecutionResult) => void; timeoutId: number; toolName: string }>());
     const browserToolRestoreStateRef = useRef<{ centerMode: CenterMode; showSettings: boolean; isRightOpen: boolean }>({
         centerMode: 'dashboard',
         showSettings: false,
@@ -98,6 +107,23 @@ export default function App() {
     useEffect(() => {
         presentationBridgeReadyRef.current = isPresentationBridgeReady;
     }, [isPresentationBridgeReady]);
+
+    useEffect(() => {
+        documentContextRef.current = documentContext;
+    }, [documentContext]);
+
+    useEffect(() => {
+        editorUrlRef.current = editorUrl;
+    }, [editorUrl]);
+
+    const buildPresentationToolContext = useCallback(() => ({
+        documentContext: documentContextRef.current,
+        editorLoaded: editorFrameStatus === 'ready',
+        editorUrl: editorUrlRef.current,
+        editorFrameStatus,
+        editorFrameMessage,
+        presentationBridgeReady: presentationBridgeReadyRef.current,
+    }), [editorFrameStatus, editorFrameMessage]);
 
     const waitForPresentationBridgeReady = useCallback(async () => {
         if (presentationBridgeReadyRef.current) {
@@ -140,6 +166,7 @@ export default function App() {
 
     const dispatchPresentationToolCommand = useCallback(async (
         requestId: string,
+        toolName: string,
         command: EditorCommand,
     ): Promise<ToolExecutionResult> => {
         if (editorFrameStatus !== 'ready') {
@@ -155,13 +182,28 @@ export default function App() {
             return { success: false, message: 'Editor is not available - open a presentation first.' };
         }
 
+        const request = { contextType: 'presentation', toolName };
+        const timeoutMs = getOnlyOfficeToolTimeoutMs(request, buildPresentationToolContext());
+
         return await new Promise<ToolExecutionResult>((resolve) => {
             const timeoutId = window.setTimeout(() => {
                 pendingPresentationToolRequestsRef.current.delete(requestId);
-                resolve({ success: false, message: 'Timed out waiting for the OnlyOffice presentation bridge.' });
-            }, 8000);
+                const timeoutResult = buildOnlyOfficeToolTimeoutResult(
+                    request,
+                    buildPresentationToolContext(),
+                    timeoutMs,
+                );
+                resolve({
+                    success: timeoutResult.success,
+                    message:
+                        typeof timeoutResult.message === 'string' && timeoutResult.message.trim()
+                            ? timeoutResult.message
+                            : 'Timed out waiting for the OnlyOffice presentation bridge.',
+                    data: timeoutResult.data,
+                });
+            }, timeoutMs);
 
-            pendingPresentationToolRequestsRef.current.set(requestId, { resolve, timeoutId });
+            pendingPresentationToolRequestsRef.current.set(requestId, { resolve, timeoutId, toolName });
 
             try {
                 targetWindow.postMessage(
@@ -187,7 +229,7 @@ export default function App() {
                 });
             }
         });
-    }, [editorFrameStatus, waitForPresentationBridgeReady]);
+    }, [editorFrameStatus, waitForPresentationBridgeReady, buildPresentationToolContext]);
 
     const dispatchToolCommandToEditor = useCallback(async (
         request: ExcelorSubagentToolRequest,
@@ -197,7 +239,7 @@ export default function App() {
             return { success: false, message: 'Automation bridge unavailable for this editor context.' };
         }
 
-        return await dispatchPresentationToolCommand(request.requestId, command);
+        return await dispatchPresentationToolCommand(request.requestId, request.toolName, command);
     }, [dispatchPresentationToolCommand]);
 
     const excelorAdapters = useMemo(
@@ -332,9 +374,17 @@ export default function App() {
                         finish({ type: 'done', answer });
                     };
 
+                    const isPresentationTurn = documentContextRef.current === 'presentation'
+                        || /\.pptx(?:$|[?#])/i.test(editorUrlRef.current || '');
+                    const turnTimeoutMs = isPresentationTurn
+                        ? EXCELOR_PRESENTATION_TURN_TIMEOUT_MS
+                        : EXCELOR_DEFAULT_TURN_TIMEOUT_MS;
                     const timeout = setTimeout(
-                        () => finish({ type: 'error', message: 'Excelor timed out after 120 seconds.' }),
-                        120_000,
+                        () => finish({
+                            type: 'error',
+                            message: `Excelor timed out after ${Math.round(turnTimeoutMs / 1000)} seconds.`,
+                        }),
+                        turnTimeoutMs,
                     );
 
                     const unsubscribe = window.electronAPI.onExcelorSnapshot((snapshot) => {
@@ -628,12 +678,23 @@ export default function App() {
 
             window.clearTimeout(pending.timeoutId);
             pendingPresentationToolRequestsRef.current.delete(payload.requestId);
+            const normalized = normalizeOnlyOfficeToolResult(
+                {
+                    success: payload.success === true,
+                    message: typeof payload.message === 'string'
+                        ? payload.message
+                        : (payload.success === true ? 'Presentation tool completed.' : 'Presentation tool failed.'),
+                    data: payload.data,
+                },
+                { contextType: 'presentation', toolName: pending.toolName || 'unknown' },
+                buildPresentationToolContext(),
+            );
             pending.resolve({
-                success: payload.success === true,
-                message: typeof payload.message === 'string'
-                    ? payload.message
-                    : (payload.success === true ? 'Presentation tool completed.' : 'Presentation tool failed.'),
-                data: payload.data,
+                success: normalized.success === true,
+                message: typeof normalized.message === 'string'
+                    ? normalized.message
+                    : (normalized.success === true ? 'Presentation tool completed.' : 'Presentation tool failed.'),
+                data: normalized.data,
             });
         };
 
@@ -642,7 +703,7 @@ export default function App() {
             window.removeEventListener('message', handleMessage);
             clearPendingPresentationToolRequests('The presentation bridge listener was removed.');
         };
-    }, [clearEditorFrameHandshake, clearPendingPresentationToolRequests, setEditorFrameState]);
+    }, [clearEditorFrameHandshake, clearPendingPresentationToolRequests, setEditorFrameState, buildPresentationToolContext]);
 
     useEffect(() => {
         clearPendingPresentationToolRequests('The editor changed before the presentation bridge returned a result.');

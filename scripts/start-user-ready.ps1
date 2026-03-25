@@ -149,14 +149,14 @@ Wait-Endpoint -Name "ONLYOFFICE Core" -Url ("http://localhost:{0}/healthcheck" -
 Write-Host "Ensuring ONLYOFFICE example service is started..."
 $exampleStarted = $false
 for ($attempt = 1; $attempt -le 60; $attempt++) {
-    $status = docker compose exec -T onlyoffice sh -lc "supervisorctl status ds:example 2>/dev/null || true"
+    $status = docker exec spreadsheet-ai-onlyoffice sh -lc "supervisorctl status ds:example 2>/dev/null || true"
     if ($status -match "RUNNING") {
         $exampleStarted = $true
         break
     }
 
     if ($status -match "STOPPED" -or $status -match "EXITED" -or $status -match "FATAL") {
-        docker compose exec -T onlyoffice sh -lc "supervisorctl start ds:example >/dev/null 2>&1 || true" | Out-Null
+        docker exec spreadsheet-ai-onlyoffice sh -lc "supervisorctl start ds:example >/dev/null 2>&1 || true" | Out-Null
     }
 
     Start-Sleep -Seconds 2

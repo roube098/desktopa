@@ -73,6 +73,14 @@ const DEFAULT_CONFIG = {
     enabled: true,
     maxSummaries: 20,
   },
+  financial: {
+    dataProvider: "financialdatasets",
+    apiKeys: {
+      financialdatasets: "",
+      exa: "",
+      tavily: "",
+    },
+  },
 };
 
 function ensureStoreDir() {
@@ -144,6 +152,27 @@ function updateConfig(partialConfig) {
   const next = deepMerge(current, partialConfig);
   writeRawConfig(next);
   return next;
+}
+
+function getFinancialSettings() {
+  const current = readRawConfig();
+  const fallback = DEFAULT_CONFIG.financial;
+  if (!current || !current.financial) {
+    return deepClone(fallback);
+  }
+  return deepMerge(fallback, current.financial);
+}
+
+function updateFinancialSettings(partialFinancialConfig) {
+  const current = readRawConfig();
+  const existing = (current && current.financial) ? current.financial : DEFAULT_CONFIG.financial;
+  const nextFinancial = deepMerge(existing, partialFinancialConfig || {});
+  const nextConfig = {
+    ...current,
+    financial: nextFinancial,
+  };
+  writeRawConfig(nextConfig);
+  return nextFinancial;
 }
 
 function getMcpConnectors() {
@@ -385,6 +414,8 @@ module.exports = {
   STORE_FILE,
   getConfig,
   updateConfig,
+  getFinancialSettings,
+  updateFinancialSettings,
   setSkillEnabled,
   setCommandState,
   setBuiltinAgentEnabled,

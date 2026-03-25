@@ -473,10 +473,10 @@ export const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(
         `}</style>
         <div
           style={{
-            padding: "10px 15px",
+            padding: "6px 12px",
             borderBottom: "1px solid rgba(255,255,255,0.1)",
             display: "flex",
-            gap: "10px",
+            gap: "8px",
             alignItems: "center",
             backgroundColor: "rgba(255,255,255,0.05)",
             flexShrink: 0,
@@ -486,18 +486,18 @@ export const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(
             type="button"
             onClick={goToPreviousPage}
             disabled={currentPage <= 1 || loading}
-            style={{ padding: "8px 12px", cursor: currentPage <= 1 ? "not-allowed" : "pointer", background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "8px", color: "white" }}
+            style={{ padding: "6px 10px", cursor: currentPage <= 1 ? "not-allowed" : "pointer", background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "8px", color: "white", fontSize: "0.95rem" }}
           >
             ‹
           </button>
-          <span style={{ color: "rgba(255,255,255,0.9)", fontSize: "0.9rem", minWidth: "60px" }}>
+          <span style={{ color: "rgba(255,255,255,0.9)", fontSize: "0.85rem", minWidth: "54px" }}>
             {currentPage} / {totalPages || "?"}
           </span>
           <button
             type="button"
             onClick={goToNextPage}
             disabled={currentPage >= totalPages || loading}
-            style={{ padding: "8px 12px", cursor: currentPage >= totalPages ? "not-allowed" : "pointer", background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "8px", color: "white" }}
+            style={{ padding: "6px 10px", cursor: currentPage >= totalPages ? "not-allowed" : "pointer", background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "8px", color: "white", fontSize: "0.95rem" }}
           >
             ›
           </button>
@@ -509,9 +509,9 @@ export const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(
             placeholder="Page"
             min={1}
             max={totalPages}
-            style={{ width: "60px", padding: "6px 8px", marginLeft: "8px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "6px", color: "white", fontSize: "0.9rem" }}
+            style={{ width: "54px", padding: "5px 8px", marginLeft: "6px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "6px", color: "white", fontSize: "0.85rem" }}
           />
-          <button type="button" onClick={goToPage} disabled={!pageInputValue} style={{ padding: "6px 10px", cursor: "pointer", background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "6px", color: "white" }}>
+          <button type="button" onClick={goToPage} disabled={!pageInputValue} style={{ padding: "5px 9px", cursor: "pointer", background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "6px", color: "white", fontSize: "0.85rem" }}>
             Go
           </button>
           {pageInputError && <span style={{ color: "#ff6b6b", fontSize: "0.8rem", marginLeft: "8px" }}>{pageInputError}</span>}

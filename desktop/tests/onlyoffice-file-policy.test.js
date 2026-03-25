@@ -5,6 +5,8 @@ const {
   SUPPORTED_FORMATS,
   normalizeFormat,
   inferFormatsFromPrompt,
+  isExplicitPresentationGenerationIntent,
+  isExplicitBlankPresentationIntent,
   resolveFormatSelection,
   buildDeterministicFileName,
   resolveUniqueFilePath,
@@ -64,6 +66,39 @@ test("resolveFormatSelection asks clarification when no clear format", () => {
 
   assert.equal(result.requiresClarification, true);
   assert.equal(result.status, "ambiguous");
+});
+
+test("explicit PowerPoint generation intent is detectable for auto-confirm create flow", () => {
+  assert.equal(
+    isExplicitPresentationGenerationIntent({
+      prompt: "Make me a PowerPoint about cloud security",
+    }),
+    true,
+  );
+});
+
+test("blank presentation intent stays distinct from normal deck generation", () => {
+  assert.equal(
+    isExplicitBlankPresentationIntent({
+      prompt: "Create a blank presentation template",
+    }),
+    true,
+  );
+  assert.equal(
+    isExplicitBlankPresentationIntent({
+      prompt: "Make me a PowerPoint about cloud security",
+    }),
+    false,
+  );
+});
+
+test("ambiguous file-creation requests do not auto-confirm presentation generation", () => {
+  assert.equal(
+    isExplicitPresentationGenerationIntent({
+      prompt: "Create a file for my notes",
+    }),
+    false,
+  );
 });
 
 test("buildDeterministicFileName includes slug, timestamp, and extension", () => {

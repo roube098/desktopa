@@ -83,6 +83,34 @@ function hasExplicitIntent(prompt, mode = "create") {
   return patterns.some((pattern) => pattern.test(text));
 }
 
+function buildIntentSourceText(options = {}) {
+  return [options.prompt, options.title]
+    .filter((value) => typeof value === "string" && value.trim())
+    .join(" ")
+    .trim();
+}
+
+function isExplicitPresentationGenerationIntent(options = {}) {
+  const combinedText = buildIntentSourceText(options);
+  const requestedFormat = normalizeFormat(options.requestedFormat || options.format);
+
+  if (!combinedText || !hasExplicitIntent(combinedText, "create")) {
+    return false;
+  }
+
+  if (requestedFormat) {
+    return requestedFormat === "pptx";
+  }
+
+  const inferred = inferFormatsFromPrompt(combinedText);
+  return inferred.length === 1 && inferred[0] === "pptx";
+}
+
+function isExplicitBlankPresentationIntent(options = {}) {
+  return isExplicitPresentationGenerationIntent(options)
+    && /\b(blank|empty|template)\b/i.test(buildIntentSourceText(options));
+}
+
 function resolveFormatSelection(options = {}) {
   const requestedFormat = normalizeFormat(options.requestedFormat);
   const prompt = String(options.prompt || "");
@@ -217,6 +245,8 @@ module.exports = {
   isSupportedFormat,
   inferFormatsFromPrompt,
   hasExplicitIntent,
+  isExplicitPresentationGenerationIntent,
+  isExplicitBlankPresentationIntent,
   resolveFormatSelection,
   slugifyTitle,
   formatTimestamp,

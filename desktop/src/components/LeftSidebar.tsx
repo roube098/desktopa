@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 
 interface LeftSidebarProps {
     ports: Ports;
@@ -8,19 +9,9 @@ interface LeftSidebarProps {
     onOpenSettings: () => void;
 }
 
-interface LocalWorkspaceFile {
-    name: string;
-    ext: string;
-    path: string;
-    size: number;
-    relativePath: string;
-}
-
 export function LeftSidebar({ ports, openEditor, openPdf, isOpen, onOpenSettings }: LeftSidebarProps) {
-    const [workspaceFiles, setWorkspaceFiles] = useState<LocalWorkspaceFile[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
     const [openingFile, setOpeningFile] = useState<string | null>(null); // track which file is being opened
+    const { files: workspaceFiles, loading, error, refresh } = useWorkspaceFiles();
 
     // Theme state
     const [theme, setTheme] = useState('dark');
@@ -39,49 +30,13 @@ export function LeftSidebar({ ports, openEditor, openPdf, isOpen, onOpenSettings
         localStorage.setItem('excelor-theme', newTheme);
     };
 
-    const fetchWorkspaceFiles = useCallback(async (showLoading = true) => {
-        if (!window.electronAPI?.listWorkspaceFiles) {
-            setError('Electron API not available');
-            setLoading(false);
-            return;
-        }
-        if (showLoading) {
-            setLoading(true);
-        }
-        try {
-            const result = await window.electronAPI.listWorkspaceFiles();
-            if (result.success) {
-                setWorkspaceFiles(result.files);
-                setError('');
-            } else {
-                setError(result.error || 'Failed to load files');
-            }
-        } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : String(err));
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    // Fetch workspace files via IPC
-    useEffect(() => {
-        void fetchWorkspaceFiles(true);
-    }, [fetchWorkspaceFiles]);
-
     useEffect(() => {
         if (!isOpen) return;
-        void fetchWorkspaceFiles(false);
-    }, [isOpen, fetchWorkspaceFiles]);
-
-    useEffect(() => {
-        if (!window.electronAPI?.onWorkspaceFilesChanged) return;
-        return window.electronAPI.onWorkspaceFilesChanged(() => {
-            void fetchWorkspaceFiles(false);
-        });
-    }, [fetchWorkspaceFiles]);
+        void refresh(false);
+    }, [isOpen, refresh]);
 
     // Open a workspace file in OnlyOffice
-    const handleFileClick = async (file: LocalWorkspaceFile) => {
+    const handleFileClick = async (file: WorkspaceFile) => {
         if (openingFile) return; // prevent double-clicks
         setOpeningFile(file.path);
         try {

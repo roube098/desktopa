@@ -1,0 +1,3 @@
+{"type":"init","content":"test query","timestamp":"2026-03-19T18:52:09.111Z"}
+{"type":"tool_result","timestamp":"2026-03-19T18:52:09.118Z","toolName":"echo_tool","args":{"input":"hello"},"result":{"success":false,"message":"bridge timed out"}}
+{"type":"terminal","timestamp":"2026-03-19T18:52:09.126Z","status":"error","reason":"empty_final_answer","emptyAnswer":false,"answerPreview":"I couldn't finish the request. The latest tool failure was echo_tool: bridge timed out"}

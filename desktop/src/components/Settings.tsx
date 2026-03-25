@@ -3,6 +3,9 @@ import { ProviderGrid } from './ProviderGrid';
 import { ProviderSettingsPanel } from './ProviderSettingsPanel';
 import { SkillsPanel } from './SkillsPanel';
 import { ConnectorsPanel } from './ConnectorsPanel';
+import { FinancialSettingsPanel } from './FinancialSettingsPanel';
+import { HeartbeatSettingsPanel } from './HeartbeatSettingsPanel';
+import { SoulSettingsPanel } from './SoulSettingsPanel';
 import { isProviderReady, hasAnyReadyProvider } from '../data/providers';
 import './Settings.css';
 
@@ -18,12 +21,24 @@ const TABS: Tab[] = [
         icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>,
     },
     {
+        id: 'financial', label: 'Financial Data',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="M7 15l4-6 4 3 4-8" /><circle cx="7" cy="15" r="1.25" /><circle cx="11" cy="9" r="1.25" /><circle cx="15" cy="12" r="1.25" /><circle cx="19" cy="4" r="1.25" /></svg>,
+    },
+    {
         id: 'skills', label: 'Skills',
         icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>,
     },
     {
         id: 'connectors', label: 'Connectors',
         icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l1.92-1.91a5 5 0 0 0-7.07-7.08l-1.1 1.1" /><path d="M14 11a5 5 0 0 0-7.54-.54l-1.92 1.91a5 5 0 0 0 7.07 7.08l1.1-1.1" /></svg>,
+    },
+    {
+        id: 'heartbeat', label: 'Heartbeat',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 8-4-16-3 8H2" /></svg>,
+    },
+    {
+        id: 'soul', label: 'Soul',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 3.85L18 8.02l-3 2.93.71 4.14L12 13.1l-3.71 1.99.71-4.14-3-2.93 4.1-1.17L12 3Z" /></svg>,
     },
     {
         id: 'about', label: 'About',
@@ -262,6 +277,13 @@ export function Settings({ onClose, ports }: SettingsProps) {
                         </div>
                     )}
 
+                    {/* Financial Data Tab */}
+                    {activeTab === 'financial' && (
+                        <div className="settings-tab-content">
+                            <FinancialSettingsPanel />
+                        </div>
+                    )}
+
                     {/* Skills Tab */}
                     {activeTab === 'skills' && (
                         <div className="settings-tab-content">
@@ -273,6 +295,20 @@ export function Settings({ onClose, ports }: SettingsProps) {
                     {activeTab === 'connectors' && (
                         <div className="settings-tab-content">
                             <ConnectorsPanel />
+                        </div>
+                    )}
+
+                    {/* Heartbeat Tab */}
+                    {activeTab === 'heartbeat' && (
+                        <div className="settings-tab-content">
+                            <HeartbeatSettingsPanel />
+                        </div>
+                    )}
+
+                    {/* Soul Tab */}
+                    {activeTab === 'soul' && (
+                        <div className="settings-tab-content">
+                            <SoulSettingsPanel />
                         </div>
                     )}
 

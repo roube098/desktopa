@@ -22,7 +22,7 @@ function buildPresentationBridgeBootstrap(options = {}) {
     : 120;
   const bridgeRequestWatchdogMs = Number.isFinite(options.bridgeRequestWatchdogMs)
     ? Math.max(500, Math.floor(options.bridgeRequestWatchdogMs))
-    : 5200;
+    : 9000;
   const bridgeTransientRetryLimit = Number.isFinite(options.bridgeTransientRetryLimit)
     ? Math.max(0, Math.floor(options.bridgeTransientRetryLimit))
     : 2;
@@ -31,7 +31,7 @@ function buildPresentationBridgeBootstrap(options = {}) {
     : 180;
   const bridgeTotalBudgetMs = Number.isFinite(options.bridgeTotalBudgetMs)
     ? Math.max(1000, Math.floor(options.bridgeTotalBudgetMs))
-    : 7600;
+    : 14000;
   const payload = {
     bridgeGuid: options.bridgeGuid || PRESENTATION_BRIDGE_GUID,
     bridgePluginConfigPath: options.bridgePluginConfigPath || PRESENTATION_BRIDGE_PLUGIN_CONFIG_PATH,

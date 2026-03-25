@@ -869,6 +869,13 @@
     margin: 0;
 }
 
+.settings-section-description {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: 0;
+    line-height: 1.5;
+}
+
 .settings-field-group {
     display: flex;
     flex-direction: column;
@@ -903,6 +910,301 @@
 
 .settings-input::placeholder {
     color: var(--text-muted);
+}
+
+.settings-field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.settings-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.settings-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+}
+
+.settings-label-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.settings-row {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.settings-row-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.settings-pill-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.settings-pill {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: all var(--transition, 0.2s ease);
+}
+
+.settings-pill:hover {
+    color: var(--text-primary);
+    border-color: var(--border-light);
+}
+
+.settings-pill.active {
+    color: var(--text-primary);
+    border-color: var(--accent);
+    background: rgba(56, 139, 253, 0.14);
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.settings-secondary-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--transition), border-color var(--transition), color var(--transition);
+    font-family: var(--font, sans-serif);
+}
+
+.settings-secondary-btn:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    border-color: var(--border-light);
+    color: var(--text-primary);
+}
+
+.settings-secondary-btn:disabled,
+.settings-done-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.settings-success {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    background: rgba(63, 185, 80, 0.12);
+    border: 1px solid rgba(63, 185, 80, 0.35);
+    color: var(--success);
+    font-size: 13px;
+}
+
+.heartbeat-section {
+    border-radius: var(--radius-lg, 12px);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    padding: 16px;
+}
+
+.heartbeat-status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.heartbeat-status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+}
+
+.heartbeat-status-pill.status-connected {
+    color: var(--success);
+    border-color: rgba(63, 185, 80, 0.5);
+    background: rgba(63, 185, 80, 0.12);
+}
+
+.heartbeat-status-pill.status-running,
+.heartbeat-status-pill.status-starting {
+    color: var(--accent-light);
+    border-color: rgba(56, 139, 253, 0.5);
+    background: rgba(56, 139, 253, 0.12);
+}
+
+.heartbeat-status-pill.status-waiting_for_qr,
+.heartbeat-status-pill.status-linking {
+    color: var(--warning);
+    border-color: rgba(210, 153, 34, 0.5);
+    background: rgba(210, 153, 34, 0.14);
+}
+
+.heartbeat-status-pill.status-error {
+    color: var(--error);
+    border-color: rgba(248, 81, 73, 0.5);
+    background: rgba(248, 81, 73, 0.12);
+}
+
+.heartbeat-linked-phone {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.heartbeat-qr-wrap {
+    width: 236px;
+    height: 236px;
+    border-radius: var(--radius, 8px);
+    border: 1px solid var(--border);
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.heartbeat-qr-image {
+    width: 220px;
+    height: 220px;
+    display: block;
+}
+
+.heartbeat-action-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.heartbeat-textarea {
+    min-height: 96px;
+    resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.heartbeat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+}
+
+.heartbeat-days-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.heartbeat-checklist {
+    min-height: 180px;
+    resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    line-height: 1.5;
+}
+
+.soul-section {
+    border-radius: var(--radius-lg, 12px);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    padding: 16px;
+}
+
+.soul-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.soul-source-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+}
+
+.soul-source-badge.source-user {
+    color: var(--success);
+    border-color: rgba(63, 185, 80, 0.5);
+    background: rgba(63, 185, 80, 0.12);
+}
+
+.soul-source-badge.source-bundled {
+    color: var(--accent-light);
+    border-color: rgba(56, 139, 253, 0.5);
+    background: rgba(56, 139, 253, 0.12);
+}
+
+.soul-source-badge.source-empty {
+    color: var(--warning);
+    border-color: rgba(210, 153, 34, 0.5);
+    background: rgba(210, 153, 34, 0.14);
+}
+
+.soul-path-text {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    word-break: break-all;
+}
+
+.soul-note {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.soul-editor {
+    min-height: 360px;
+    resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    line-height: 1.6;
+}
+
+.soul-actions {
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
 }
 
 /* Range input styling */
@@ -1371,7 +1673,7 @@
     font-family: var(--font, sans-serif);
 }
 
-.settings-done-btn:hover {
+.settings-done-btn:hover:not(:disabled) {
     background: var(--bg-elevated);
     border-color: var(--border-light);
     transform: translateY(-1px);
