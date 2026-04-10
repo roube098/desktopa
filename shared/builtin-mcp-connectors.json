@@ -1,0 +1,16 @@
+[
+  {
+    "id": "builtin-tldraw",
+    "name": "tldraw",
+    "title": "tldraw Canvas",
+    "description": "Built-in tldraw canvas MCP app.",
+    "url": "https://tldraw-mcp-app.tldraw.workers.dev/mcp",
+    "status": "disconnected",
+    "isEnabled": true,
+    "isBuiltIn": true,
+    "builtInAppId": "tldraw",
+    "builtInKind": "mcp-app",
+    "autoOpenOnExec": true,
+    "resourceUri": "ui://show-canvas/mcp-app.html"
+  }
+]

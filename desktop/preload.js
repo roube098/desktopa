@@ -80,6 +80,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     excelorRunTurn: (input, scope = "main") => ipcRenderer.invoke("excelor-run-turn", { input, scope }),
     excelorListSubagents: (scope = "main") => ipcRenderer.invoke("excelor-list-subagents", { scope }),
     excelorLaunch: (input, scope = "main") => ipcRenderer.invoke("excelor-launch", { input, scope }),
+    excelorAbortTurn: (scope = "main") => ipcRenderer.invoke("excelor-abort-turn", { scope }),
+    approveSkillProposal: (payload, scope = "main") => ipcRenderer.invoke("approve-skill-proposal", payload || {}, scope),
     onExcelorSnapshot: (callback) => {
         const handler = (_event, snapshot) => callback(snapshot);
         ipcRenderer.on("excelor-snapshot", handler);
@@ -91,6 +93,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
         }
         return ipcRenderer.invoke("excelor-update-context", scopeOrContext || {});
     },
+    getActiveMcpApp: () => ipcRenderer.invoke("get-active-mcp-app"),
+    onMcpAppStateChange: (callback) => {
+        const handler = (_event, state) => callback(state);
+        ipcRenderer.on("mcp-app-state-changed", handler);
+        return () => ipcRenderer.removeListener("mcp-app-state-changed", handler);
+    },
+    mcpAppOpenSession: (connectorId) => ipcRenderer.invoke("mcp-app-open-session", connectorId),
+    mcpAppListResources: (sessionId, cursor) => ipcRenderer.invoke("mcp-app-list-resources", sessionId, cursor),
+    mcpAppListResourceTemplates: (sessionId, cursor) => ipcRenderer.invoke("mcp-app-list-resource-templates", sessionId, cursor),
+    mcpAppReadResource: (sessionId, uri) => ipcRenderer.invoke("mcp-app-read-resource", sessionId, uri),
+    mcpAppCallTool: (sessionId, toolName, args) => ipcRenderer.invoke("mcp-app-call-tool", sessionId, toolName, args || {}),
+    mcpAppProxyUiMessage: (sessionId, params) => ipcRenderer.invoke("mcp-app-proxy-ui-message", sessionId, params || {}),
+    mcpAppHandleMessage: (payload) => ipcRenderer.invoke("mcp-app-handle-message", payload || {}),
+    mcpAppUpdateModelContext: (payload) => ipcRenderer.invoke("mcp-app-update-model-context", payload || {}),
+    mcpAppMarkReady: (payload) => ipcRenderer.invoke("mcp-app-mark-ready", payload || {}),
+    mcpAppClose: (payload) => ipcRenderer.invoke("mcp-app-close", payload || {}),
 
     // Workspace file management
     listWorkspaceFiles: () => ipcRenderer.invoke("list-workspace-files"),
@@ -121,8 +139,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
     getSkills: () => ipcRenderer.invoke("get-skills"),
     setSkillEnabled: (skillId, enabled) => ipcRenderer.invoke("set-skill-enabled", skillId, enabled),
     resyncSkills: () => ipcRenderer.invoke("resync-skills"),
+    onSkillsChanged: (callback) => {
+        const handler = () => callback();
+        ipcRenderer.on("skills-changed", handler);
+        return () => ipcRenderer.removeListener("skills-changed", handler);
+    },
+    getSkillTree: (skillId) => ipcRenderer.invoke("get-skill-tree", skillId),
+    readSkillFile: (filePath) => ipcRenderer.invoke("read-skill-file", filePath),
     openSkillInEditor: (filePath) => ipcRenderer.invoke("open-skill-in-editor", filePath),
     showSkillInFolder: (filePath) => ipcRenderer.invoke("show-skill-in-folder", filePath),
+    getPlugins: () => ipcRenderer.invoke("get-plugins"),
+    setPluginEnabled: (pluginName, enabled) => ipcRenderer.invoke("set-plugin-enabled", pluginName, enabled),
+    resyncPlugins: () => ipcRenderer.invoke("resync-plugins"),
+    getPluginTree: (pluginId) => ipcRenderer.invoke("get-plugin-tree", pluginId),
+    readPluginFile: (filePath) => ipcRenderer.invoke("read-plugin-file", filePath),
+    openPluginInEditor: (filePath) => ipcRenderer.invoke("open-plugin-in-editor", filePath),
+    showPluginInFolder: (filePath) => ipcRenderer.invoke("show-plugin-in-folder", filePath),
 
     // MCP Connectors
     getMcpConnectors: () => ipcRenderer.invoke("get-mcp-connectors"),
@@ -131,6 +163,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
     setMcpConnectorEnabled: (connectorId, enabled) => ipcRenderer.invoke("set-mcp-connector-enabled", connectorId, enabled),
     checkMcpConnector: (connectorId) => ipcRenderer.invoke("check-mcp-connector", connectorId),
     disconnectMcpConnector: (connectorId) => ipcRenderer.invoke("disconnect-mcp-connector", connectorId),
+
+    // Financial settings
+    getFinancialSettings: () => ipcRenderer.invoke("get-financial-settings"),
+    updateFinancialSettings: (patch) => ipcRenderer.invoke("update-financial-settings", patch || {}),
+    getFinancialMcpProviders: () => ipcRenderer.invoke("get-financial-mcp-providers"),
+    connectFinancialMcpProvider: (providerId, apiKey) =>
+        ipcRenderer.invoke("connect-financial-mcp-provider", providerId, apiKey),
+    disconnectFinancialMcpProvider: (providerId) =>
+        ipcRenderer.invoke("disconnect-financial-mcp-provider", providerId),
+    checkFinancialMcpProvider: (providerId) =>
+        ipcRenderer.invoke("check-financial-mcp-provider", providerId),
+    syncFinancialMcpProviders: () => ipcRenderer.invoke("sync-financial-mcp-providers"),
 
     // Local Provider Connections
     testOllamaConnection: (url) => ipcRenderer.invoke("test-ollama-connection", url),
@@ -142,15 +186,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     removeCustomModel: (providerId, modelId) => ipcRenderer.invoke("remove-custom-model", providerId, modelId),
     getMergedModels: (providerId) => ipcRenderer.invoke("get-merged-models", providerId),
 
-    // PDF viewer
-    readPdfFile: (filePath) => {
-        const pathString = typeof filePath === "string" ? filePath : (filePath?.path && typeof filePath.path === "string" ? filePath.path : String(filePath || ""));
-        return ipcRenderer.invoke("pdf:readFile", pathString);
-    },
-    getDocumentHighlights: (filePath) => ipcRenderer.invoke("pdf:getDocumentHighlights", typeof filePath === "string" ? filePath : filePath?.path ?? ""),
-    saveDocumentHighlights: (filePath, highlights) => ipcRenderer.invoke("pdf:saveDocumentHighlights", typeof filePath === "string" ? filePath : filePath?.path ?? "", highlights),
-    getLastViewedPage: (filePath) => ipcRenderer.invoke("pdf:getLastViewedPage", typeof filePath === "string" ? filePath : filePath?.path ?? ""),
-    saveLastViewedPage: (filePath, pageNumber) => ipcRenderer.invoke("pdf:saveLastViewedPage", typeof filePath === "string" ? filePath : filePath?.path ?? "", pageNumber),
+    // PDF: open in ONLYOFFICE; text extraction for chat context / attachments
+    openPdfInOnlyoffice: (filePath) =>
+        ipcRenderer.invoke(
+            "open-pdf-in-onlyoffice",
+            typeof filePath === "string" ? filePath : filePath?.path ?? "",
+        ),
     extractPdfText: (filePath) => ipcRenderer.invoke("pdf:extractText", typeof filePath === "string" ? filePath : filePath?.path ?? ""),
     extractPdfTextFromBuffer: (base64) => ipcRenderer.invoke("pdf:extractTextFromBuffer", base64),
 });

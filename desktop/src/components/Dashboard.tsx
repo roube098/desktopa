@@ -1,18 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { AuiIf } from "@assistant-ui/react";
+import { MessageSquarePlus } from 'lucide-react';
 import { MyThread } from "./MyThread";
+import type { SkillProposalEntry } from "../types/skills";
 import type { AgentConfig } from "../types/agent-types";
+import type { InlineMcpAppEntry } from "../types/inline-mcp-app";
 
 interface TitlebarProps {
     toggleLeft?: () => void;
     toggleRight?: () => void;
     isLeftOpen?: boolean;
     isRightOpen?: boolean;
+    /** When true, the right pane toggle is inactive (e.g. dashboard/settings). */
+    rightToggleDisabled?: boolean;
     onOpenSettings: () => void;
     onOpenBrowser?: () => void;
+    /** Clears the main Excelor chat and backend conversation state. */
+    onNewChat?: () => void;
 }
 
-export function Titlebar({ toggleLeft, toggleRight, isLeftOpen, isRightOpen, onOpenSettings, onOpenBrowser }: TitlebarProps) {
+export function Titlebar({ toggleLeft, toggleRight, isLeftOpen, isRightOpen, rightToggleDisabled, onOpenSettings, onOpenBrowser, onNewChat }: TitlebarProps) {
     const minimize = () => window.electronAPI?.minimizeWindow();
     const maximize = () => window.electronAPI?.maximizeWindow();
     const close = () => window.electronAPI?.closeWindow();
@@ -41,6 +48,11 @@ export function Titlebar({ toggleLeft, toggleRight, isLeftOpen, isRightOpen, onO
                         )}
                     </button>
                 )}
+                {onNewChat && (
+                    <button type="button" className="titlebar-btn" title="New chat" onClick={onNewChat}>
+                        <MessageSquarePlus size={14} strokeWidth={2} />
+                    </button>
+                )}
                 {onOpenBrowser && (
                     <button className="titlebar-btn" title="Open Browser" onClick={onOpenBrowser}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -51,7 +63,14 @@ export function Titlebar({ toggleLeft, toggleRight, isLeftOpen, isRightOpen, onO
                     </button>
                 )}
                 {toggleRight && (
-                    <button className={`titlebar-btn ${isRightOpen ? 'active' : ''}`} title="Toggle Right Pane" onClick={toggleRight}>
+                    <button
+                        type="button"
+                        className={`titlebar-btn ${isRightOpen ? 'active' : ''}`}
+                        title={rightToggleDisabled ? 'Open browser or OnlyOffice to use the right pane' : 'Toggle Right Pane'}
+                        onClick={toggleRight}
+                        disabled={rightToggleDisabled}
+                        style={rightToggleDisabled ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
+                    >
                         {isRightOpen ? (
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="15" y1="3" x2="15" y2="21"></line></svg>
                         ) : (
@@ -94,9 +113,15 @@ interface RecentFile {
 
 interface DashboardProps {
     ports: Ports;
-    openEditor: (ext: string, isRecent?: boolean, path?: string) => void;
-    openPdf?: (filePath: string) => void;
+    openEditor: (ext: string, isRecent?: boolean, path?: string, pdfSourcePath?: string) => void;
+    /** After ONLYOFFICE opens a new workspace PDF (create flow), load text for chat context. */
+    primePdfContextFromPath?: (filePath: string) => void;
     subagents?: ExcelorSubagentDescriptor[];
+    subagentActivity?: ExcelorActivityEntry[];
+    promptHistory?: ExcelorSubagentPromptEntry[];
+    skillProposals?: SkillProposalEntry[];
+    excelorConversationId?: string;
+    inlineMcpApps?: InlineMcpAppEntry[];
 }
 
 export const EXCELOR_AGENT_CONFIG: AgentConfig = {
@@ -118,58 +143,66 @@ export const EXCELOR_AGENT_CONFIG: AgentConfig = {
     ],
 };
 
-function DashboardThreadUI({ subagents = [] }: { subagents?: ExcelorSubagentDescriptor[] }) {
+function DashboardThreadUI({
+    subagents = [],
+    activity = [],
+    promptHistory = [],
+    skillProposals = [],
+    excelorConversationId,
+    inlineMcpApps = [],
+}: {
+    subagents?: ExcelorSubagentDescriptor[];
+    activity?: ExcelorActivityEntry[];
+    promptHistory?: ExcelorSubagentPromptEntry[];
+    skillProposals?: SkillProposalEntry[];
+    excelorConversationId?: string;
+    inlineMcpApps?: InlineMcpAppEntry[];
+}) {
     return (
         <>
             <AuiIf condition={(s) => s.thread.isEmpty}>
                 <div className="dashboard-prompt-container">
                     <div className="prompt-header-text">How can I help you today?</div>
-                    <MyThread agentConfig={EXCELOR_AGENT_CONFIG} />
+                    <MyThread
+                        agentConfig={EXCELOR_AGENT_CONFIG}
+                        subagents={subagents}
+                        activity={activity}
+                        promptHistory={promptHistory}
+                        skillProposals={skillProposals}
+                        excelorConversationId={excelorConversationId}
+                        inlineMcpApps={inlineMcpApps}
+                    />
                 </div>
-                {subagents.length > 0 && (
-                    <div className="excelor-subagent-inline">
-                        {subagents.map((subagent) => (
-                            <div key={subagent.id} className="excelor-subagent-inline-card">
-                                <div className="excelor-subagent-inline-head">
-                                    <strong>{subagent.nickname}</strong>
-                                    <span className={`excelor-subagent-pill status-${subagent.status}`}>{subagent.status}</span>
-                                </div>
-                                <p>{subagent.roleName} - depth {subagent.depth}</p>
-                                {subagent.lastError && <p className="error">{subagent.lastError}</p>}
-                                {!subagent.lastError && subagent.lastOutput && <p>{subagent.lastOutput}</p>}
-                                {!subagent.lastError && !subagent.lastOutput && subagent.lastMessage && <p>{subagent.lastMessage}</p>}
-                            </div>
-                        ))}
-                    </div>
-                )}
             </AuiIf>
 
             <AuiIf condition={(s) => !s.thread.isEmpty}>
                 <div className="dashboard-thread-active" style={{ flexGrow: 1, overflow: 'hidden', display: 'flex', width: '100%', maxWidth: '800px', margin: '0 auto', flexDirection: 'column' }}>
-                    <MyThread agentConfig={EXCELOR_AGENT_CONFIG} />
+                    <MyThread
+                        agentConfig={EXCELOR_AGENT_CONFIG}
+                        subagents={subagents}
+                        activity={activity}
+                        promptHistory={promptHistory}
+                        skillProposals={skillProposals}
+                        excelorConversationId={excelorConversationId}
+                        inlineMcpApps={inlineMcpApps}
+                    />
                 </div>
-                {subagents.length > 0 && (
-                    <div className="excelor-subagent-inline">
-                        {subagents.map((subagent) => (
-                            <div key={subagent.id} className="excelor-subagent-inline-card">
-                                <div className="excelor-subagent-inline-head">
-                                    <strong>{subagent.nickname}</strong>
-                                    <span className={`excelor-subagent-pill status-${subagent.status}`}>{subagent.status}</span>
-                                </div>
-                                <p>{subagent.roleName} - depth {subagent.depth}</p>
-                                {subagent.lastError && <p className="error">{subagent.lastError}</p>}
-                                {!subagent.lastError && subagent.lastOutput && <p>{subagent.lastOutput}</p>}
-                                {!subagent.lastError && !subagent.lastOutput && subagent.lastMessage && <p>{subagent.lastMessage}</p>}
-                            </div>
-                        ))}
-                    </div>
-                )}
             </AuiIf>
         </>
     );
 }
 
-export function Dashboard({ ports, openEditor, openPdf, subagents = [] }: DashboardProps) {
+export function Dashboard({
+    ports,
+    openEditor,
+    primePdfContextFromPath,
+    subagents = [],
+    subagentActivity = [],
+    promptHistory = [],
+    skillProposals = [],
+    excelorConversationId,
+    inlineMcpApps = [],
+}: DashboardProps) {
     const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -234,8 +267,8 @@ export function Dashboard({ ports, openEditor, openPdf, subagents = [] }: Dashbo
             });
             if (!result.success) {
                 setCreateError(result.error || 'Failed to create file.');
-            } else if (format === 'pdf' && result.workspacePath && openPdf) {
-                openPdf(result.workspacePath);
+            } else if (format === 'pdf' && result.workspacePath && primePdfContextFromPath) {
+                primePdfContextFromPath(result.workspacePath);
             }
         } catch (err: unknown) {
             setCreateError(err instanceof Error ? err.message : String(err));
@@ -282,7 +315,14 @@ export function Dashboard({ ports, openEditor, openPdf, subagents = [] }: Dashbo
                     </div>
                 )}
 
-                <DashboardThreadUI subagents={subagents} />
+                <DashboardThreadUI
+                    subagents={subagents}
+                    activity={subagentActivity}
+                    promptHistory={promptHistory}
+                    skillProposals={skillProposals}
+                    excelorConversationId={excelorConversationId}
+                    inlineMcpApps={inlineMcpApps}
+                />
 
                 <AuiIf condition={(s) => s.thread.isEmpty}>
                     <div className="dashboard-recent">

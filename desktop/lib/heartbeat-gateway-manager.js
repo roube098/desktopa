@@ -38,6 +38,22 @@ function buildFinancialEnv(runtimeConfigStore) {
     if (financial && financial.dataProvider) {
       env.EXCELOR_FINANCIAL_PROVIDER = financial.dataProvider;
     }
+
+    if (typeof runtimeConfigStore.syncFinancialMcpProviders === "function") {
+      runtimeConfigStore.syncFinancialMcpProviders();
+    }
+    if (typeof runtimeConfigStore.getFinancialMcpProviders === "function") {
+      const mcpProviders = runtimeConfigStore.getFinancialMcpProviders();
+      const states = mcpProviders?.states || {};
+      for (const [providerId, providerState] of Object.entries(states)) {
+        if (!providerState?.enabled || !providerState?.mcpUrl) {
+          continue;
+        }
+        const envKey = `EXCELOR_MCP_${String(providerId).toUpperCase().replace(/[^A-Z0-9]/g, "_")}_URL`;
+        env[envKey] = String(providerState.mcpUrl);
+      }
+    }
+
     return env;
   } catch (_error) {
     return {};

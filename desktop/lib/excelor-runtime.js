@@ -41,6 +41,63 @@ function serializeEnv(env = {}) {
   );
 }
 
+const PROVIDER_ENV_NAMES = {
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  google: "GOOGLE_API_KEY",
+  xai: "XAI_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  moonshot: "MOONSHOT_API_KEY",
+  zai: "ZAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+};
+
+const PROVIDER_LABELS = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+  xai: "xAI",
+  deepseek: "DeepSeek",
+  moonshot: "Moonshot",
+  zai: "Z.AI",
+  openrouter: "OpenRouter",
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+};
+
+const LOCAL_PROVIDER_IDS = new Set(["ollama", "lmstudio"]);
+
+function inferProviderId(executionConfig = {}) {
+  const explicitProviderId = normalizeText(executionConfig.providerId).toLowerCase();
+  if (explicitProviderId) return explicitProviderId;
+
+  const modelId = normalizeText(executionConfig.modelId);
+  if (!modelId) return "";
+  if (modelId.startsWith("openrouter:")) return "openrouter";
+  if (modelId.startsWith("ollama:")) return "ollama";
+  if (modelId.startsWith("zai:")) return "zai";
+  if (modelId.startsWith("claude-")) return "anthropic";
+  if (modelId.startsWith("gemini-")) return "google";
+  if (modelId.startsWith("grok-")) return "xai";
+  if (modelId.startsWith("deepseek-")) return "deepseek";
+  if (modelId.startsWith("kimi-")) return "moonshot";
+  return "openai";
+}
+
+function hasConfiguredEnvValue(value) {
+  const normalized = normalizeText(value);
+  return Boolean(normalized && !normalized.startsWith("your-"));
+}
+
+function buildMissingProviderEnvMessage(providerId, envName, modelId) {
+  const providerLabel = PROVIDER_LABELS[providerId] || providerId || "the selected provider";
+  const normalizedModelId = normalizeText(modelId);
+  if (normalizedModelId) {
+    return `Excelor requires ${envName} for ${providerLabel} before launching model ${normalizedModelId}.`;
+  }
+  return `Excelor requires ${envName} for ${providerLabel} before launching this run.`;
+}
+
 class ExcelorRuntime extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -49,6 +106,9 @@ class ExcelorRuntime extends EventEmitter {
     this.invokeOnlyOfficeTool = options.invokeOnlyOfficeTool || null;
     this.onOpenGeneratedPptx = typeof options.onOpenGeneratedPptx === "function"
       ? options.onOpenGeneratedPptx
+      : null;
+    this.onMcpAppToolResult = typeof options.onMcpAppToolResult === "function"
+      ? options.onMcpAppToolResult
       : null;
     this.thread = null;
     this.conversationId = newId("conv");
@@ -64,6 +124,7 @@ class ExcelorRuntime extends EventEmitter {
     this._resolveReadyPromise = null;
     this._rejectReadyPromise = null;
     this._draftAssistantText = "";
+    this._pendingSubagentPrompts = new Map();
   }
 
   bootstrap() {
@@ -78,6 +139,8 @@ class ExcelorRuntime extends EventEmitter {
         activity: [],
         lastError: "",
         subagents: [],
+        subagentPrompts: [],
+        skillProposals: [],
       };
     }
     return this.thread;
@@ -88,11 +151,67 @@ class ExcelorRuntime extends EventEmitter {
       ...this.bootstrap(),
       context: this.getContext(),
       draftAssistantText: this._draftAssistantText || "",
+      conversationId: this.conversationId,
     });
   }
 
   listSubagents() {
     return this.bootstrap().subagents;
+  }
+
+  async refreshPlugins() {
+    if (!this._process || !this._processReady) {
+      return { ok: false, reason: "process-not-ready" };
+    }
+
+    try {
+      const response = await fetch(`http://localhost:${this.port}/plugins/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!response.ok) {
+        throw new Error(`Plugin refresh failed with status ${response.status}.`);
+      }
+      return await response.json();
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async abortTurn(reason = "Run cancelled.") {
+    const thread = this.bootstrap();
+    if (thread.status !== "running" || !thread.activeTurnId) {
+      return this.getSnapshot();
+    }
+
+    try {
+      await fetch(`http://localhost:${this.port}/abort`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: this.conversationId }),
+      });
+    } catch (_error) {
+      // Best effort: clear local state even if the abort request races or the server is already gone.
+    }
+
+    thread.status = "idle";
+    thread.activeTurnId = null;
+    thread.updatedAt = nowIso();
+    thread.lastError = reason;
+    this._draftAssistantText = "";
+    this.pushActivity({
+      id: newId("act"),
+      kind: "status",
+      status: "failed",
+      title: "Excelor run aborted",
+      detail: reason,
+      createdAt: nowIso(),
+    });
+    this.emitSnapshot();
+    return this.getSnapshot();
   }
 
   launch(input) {
@@ -253,6 +372,13 @@ class ExcelorRuntime extends EventEmitter {
     }
 
     try {
+      this._validateExecutionConfig(executionConfig);
+    } catch (error) {
+      this._recordLaunchFailure(error);
+      throw error;
+    }
+
+    try {
       await this._ensureProcess(executionConfig.env || {});
       return executionConfig;
     } catch (error) {
@@ -279,12 +405,44 @@ class ExcelorRuntime extends EventEmitter {
     this.emitSnapshot();
   }
 
+  _validateExecutionConfig(executionConfig) {
+    const providerId = inferProviderId(executionConfig);
+    if (!providerId || LOCAL_PROVIDER_IDS.has(providerId)) {
+      return;
+    }
+
+    const envName = PROVIDER_ENV_NAMES[providerId];
+    if (!envName) {
+      return;
+    }
+
+    if (!hasConfiguredEnvValue(executionConfig.env?.[envName])) {
+      throw new Error(buildMissingProviderEnvMessage(providerId, envName, executionConfig.modelId));
+    }
+  }
+
+  _getTerminalFailure(doneEvent) {
+    const payload = this._asRecord(doneEvent);
+    const reason = normalizeText(payload?.reason);
+    if (!reason || reason === "aborted") {
+      return null;
+    }
+
+    const answer = normalizeText(payload?.answer);
+    return {
+      reason,
+      answer,
+      message: answer ? `${reason}: ${answer}` : reason,
+    };
+  }
+
   async _executeTurn(prompt, turnId, executionConfig) {
     try {
       await this._ensureProcess(executionConfig.env || {});
 
       const finalRun = await this._streamRun(prompt, executionConfig.modelId);
       const answer = finalRun.answer;
+      const terminalFailure = this._getTerminalFailure(finalRun.doneEvent);
 
       const thread = this.bootstrap();
       if (thread.activeTurnId !== turnId) return; // Stale turn
@@ -295,14 +453,26 @@ class ExcelorRuntime extends EventEmitter {
       thread.status = "idle";
       thread.activeTurnId = null;
       thread.updatedAt = nowIso();
-      this.pushActivity({
-        id: newId("act"),
-        kind: "status",
-        status: "completed",
-        title: "Excelor finished",
-        detail: "Response ready.",
-        createdAt: nowIso(),
-      });
+      if (terminalFailure) {
+        thread.lastError = terminalFailure.message;
+        this.pushActivity({
+          id: newId("act"),
+          kind: "status",
+          status: "failed",
+          title: `Excelor finished with ${terminalFailure.reason}`,
+          detail: terminalFailure.answer || terminalFailure.reason,
+          createdAt: nowIso(),
+        });
+      } else {
+        this.pushActivity({
+          id: newId("act"),
+          kind: "status",
+          status: "completed",
+          title: "Excelor finished",
+          detail: "Response ready.",
+          createdAt: nowIso(),
+        });
+      }
       this.emitSnapshot();
     } catch (error) {
       const thread = this.bootstrap();
@@ -333,10 +503,16 @@ class ExcelorRuntime extends EventEmitter {
    * translate events to activity entries, and retain the final done event.
    */
   async _streamRun(prompt, modelId) {
+    const desktopContext = this.getContext();
     const res = await fetch(`http://localhost:${this.port}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: prompt, conversationId: this.conversationId, model: modelId }),
+      body: JSON.stringify({
+        query: prompt,
+        conversationId: this.conversationId,
+        model: modelId,
+        desktopContext,
+      }),
     });
 
     if (!res.ok) {
@@ -405,13 +581,166 @@ class ExcelorRuntime extends EventEmitter {
     return this._asRecord(result);
   }
 
+  _captureSubagentPromptFromToolEvent(event) {
+    const toolName = normalizeText(event?.tool).toLowerCase();
+    if (toolName !== "spawn_agent" && toolName !== "send_input") {
+      return;
+    }
+
+    const args = this._asRecord(event?.args) || {};
+    const taskPrompt = normalizeText(args.input);
+    if (!taskPrompt) {
+      return;
+    }
+
+    const parsedResult = this._parseToolCallResult(event?.result);
+    if (!parsedResult) {
+      return;
+    }
+
+    if (parsedResult.ok === false) {
+      return;
+    }
+
+    const agentId = normalizeText(parsedResult.agent_id);
+    if (!agentId) {
+      return;
+    }
+
+    this._recordSubagentPromptAssignment({
+      agentId,
+      taskPrompt,
+      toolName,
+      createdAt: this._resolveSubagentPromptTimestamp(agentId, toolName, event),
+    });
+    this._setSubagentTaskPrompt(agentId, taskPrompt);
+  }
+
+  _extractMcpAppToolPayload(event) {
+    const parsedResult = this._parseToolCallResult(event?.result);
+    const payload = this._asRecord(parsedResult?.data);
+    const appSession = this._asRecord(payload?.appSession);
+    if (!payload || !appSession) {
+      return null;
+    }
+
+    const sessionId = normalizeText(appSession.sessionId);
+    const resourceUri = normalizeText(appSession.resourceUri);
+    if (!sessionId || !resourceUri) {
+      return null;
+    }
+
+    return {
+      toolName: normalizeText(event?.tool),
+      toolArguments: this._asRecord(event?.args) || {},
+      connector: this._asRecord(payload.connector) || {},
+      remoteToolName: normalizeText(payload.remoteToolName) || normalizeText(event?.tool),
+      appSession: {
+        ...appSession,
+        sessionId,
+        resourceUri,
+      },
+      content: Array.isArray(payload.content) ? payload.content : [],
+      structuredContent: payload.structuredContent,
+      meta: this._asRecord(payload.meta) || undefined,
+    };
+  }
+
+  async _maybeHandleMcpAppToolResult(event) {
+    if (!this.onMcpAppToolResult) {
+      return;
+    }
+
+    const payload = this._extractMcpAppToolPayload(event);
+    if (!payload) {
+      return;
+    }
+
+    try {
+      await this.onMcpAppToolResult(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.pushActivity({
+        id: newId("act"),
+        kind: "status",
+        status: "failed",
+        title: "Failed to open MCP app",
+        detail: shortText(message, 320),
+        createdAt: nowIso(),
+      });
+    }
+  }
+
+  _resolveSubagentPromptTimestamp(agentId, toolName, event) {
+    const explicitTimestamp = normalizeText(event?.at);
+    if (explicitTimestamp) {
+      return explicitTimestamp;
+    }
+
+    const thread = this.bootstrap();
+    const existing = thread.subagents.find((agent) => agent.id === agentId);
+    if (toolName === "spawn_agent" && existing?.createdAt) {
+      return existing.createdAt;
+    }
+
+    return nowIso();
+  }
+
+  _recordSubagentPromptAssignment({ agentId, taskPrompt, toolName, createdAt }) {
+    const normalizedAgentId = normalizeText(agentId);
+    const normalizedPrompt = normalizeText(taskPrompt);
+    const normalizedToolName = normalizeText(toolName).toLowerCase();
+    const normalizedCreatedAt = normalizeText(createdAt) || nowIso();
+    if (!normalizedAgentId || !normalizedPrompt) {
+      return;
+    }
+    if (normalizedToolName !== "spawn_agent" && normalizedToolName !== "send_input") {
+      return;
+    }
+
+    const thread = this.bootstrap();
+    thread.subagentPrompts = [
+      ...thread.subagentPrompts,
+      {
+        id: newId("subprompt"),
+        agentId: normalizedAgentId,
+        prompt: normalizedPrompt,
+        createdAt: normalizedCreatedAt,
+        toolName: normalizedToolName,
+        conversationId: this.conversationId,
+      },
+    ];
+    thread.updatedAt = nowIso();
+  }
+
+  _setSubagentTaskPrompt(agentId, taskPrompt) {
+    const normalizedAgentId = normalizeText(agentId);
+    const normalizedPrompt = normalizeText(taskPrompt);
+    if (!normalizedAgentId || !normalizedPrompt) {
+      return;
+    }
+
+    const thread = this.bootstrap();
+    const existing = thread.subagents.find((agent) => agent.id === normalizedAgentId);
+    if (!existing) {
+      this._pendingSubagentPrompts.set(normalizedAgentId, normalizedPrompt);
+      return;
+    }
+
+    existing.taskPrompt = normalizedPrompt;
+    existing.updatedAt = nowIso();
+    existing.lastActivityAt = nowIso();
+    this._pendingSubagentPrompts.delete(normalizedAgentId);
+  }
+
   _findGeneratedPptxPath(doneEvent) {
     const payload = this._asRecord(doneEvent);
     const toolCalls = Array.isArray(payload?.toolCalls) ? payload.toolCalls : [];
+    const pptxOutputTools = new Set(["createFile", "compilePresentationSlides", "packPresentationTemplate"]);
 
     for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
       const toolCall = this._asRecord(toolCalls[index]);
-      if (normalizeText(toolCall?.tool) !== "createFile") continue;
+      if (!pptxOutputTools.has(normalizeText(toolCall?.tool))) continue;
 
       const args = this._asRecord(toolCall?.args) || {};
       const result = this._parseToolCallResult(toolCall?.result);
@@ -485,10 +814,32 @@ class ExcelorRuntime extends EventEmitter {
         this.pushActivity({ id, kind: "tool", status: "running", title: `Tool: ${event.tool}`, detail: JSON.stringify(event.args), createdAt });
         break;
       case "tool_end":
+        this._captureSubagentPromptFromToolEvent(event);
+        void this._maybeHandleMcpAppToolResult(event);
         this.pushActivity({ id, kind: "tool", status: "completed", title: `Tool: ${event.tool}`, detail: event.result?.slice?.(0, 300) || "", createdAt });
         break;
       case "tool_error":
         this.pushActivity({ id, kind: "tool", status: "failed", title: `Tool error: ${event.tool}`, detail: event.error, createdAt });
+        break;
+      case "tool_approval":
+        this.pushActivity({
+          id,
+          kind: "tool",
+          status: event.approved === "deny" ? "failed" : "completed",
+          title: `Tool approval: ${event.tool}`,
+          detail: `Decision: ${event.approved}${event.args?.path ? ` | path: ${event.args.path}` : ""}`,
+          createdAt,
+        });
+        break;
+      case "tool_denied":
+        this.pushActivity({
+          id,
+          kind: "tool",
+          status: "failed",
+          title: `Tool denied: ${event.tool}`,
+          detail: event.args?.path ? `Path: ${event.args.path}` : JSON.stringify(event.args || {}),
+          createdAt,
+        });
         break;
       case "tool_progress":
         this.pushActivity({ id, kind: "tool", status: "running", title: `Tool: ${event.tool}`, detail: event.message, createdAt });
@@ -496,11 +847,65 @@ class ExcelorRuntime extends EventEmitter {
       case "context_cleared":
         this.pushActivity({ id, kind: "status", status: "running", title: "Context pruned", detail: `Cleared ${event.clearedCount} old results`, createdAt });
         break;
+      case "compact": {
+        const preTokens = Number.isFinite(event.preTokens) ? Number(event.preTokens) : 0;
+        const postTokens = Number.isFinite(event.postTokens) ? Number(event.postTokens) : 0;
+        const reduction = preTokens > 0
+          ? Math.max(0, Math.round((1 - postTokens / preTokens) * 100))
+          : 0;
+        this.pushActivity({
+          id,
+          kind: "status",
+          status: "completed",
+          title: "Context compacted",
+          detail: `Replaced prior tool context with a summary (${preTokens.toLocaleString()} -> ${postTokens.toLocaleString()} tokens, ${reduction}% smaller)`,
+          createdAt,
+        });
+        break;
+      }
       case "response_delta":
         this._draftAssistantText = (this._draftAssistantText || "") + (event.delta || "");
         break;
       case "done":
         this._draftAssistantText = "";
+        break;
+      case "skill_reflection":
+        this.pushActivity({
+          id,
+          kind: "skill_reflection",
+          status: "completed",
+          title: "Skill reflection",
+          detail: event.message,
+          createdAt,
+        });
+        break;
+      case "skill_proposal": {
+        const thread = this.bootstrap();
+        const proposalEntry = {
+          id: newId("skill-prop"),
+          proposalId: event.proposalId,
+          action: event.action,
+          name: event.name,
+          description: event.description,
+          body: event.body,
+          skillNameToUpdate: event.skillNameToUpdate || "",
+          createdAt,
+          status: "pending",
+        };
+        thread.skillProposals = [...(thread.skillProposals || []), proposalEntry];
+        this.pushActivity({
+          id,
+          kind: "skill_proposal",
+          status: "pending",
+          title: `Skill proposal: ${event.name}`,
+          detail: event.description,
+          createdAt,
+          proposalId: event.proposalId,
+        });
+        break;
+      }
+      case "skills_changed":
+        this.emit("skills-changed");
         break;
       case "subagent_spawned":
       case "subagent_started":
@@ -528,6 +933,7 @@ class ExcelorRuntime extends EventEmitter {
           detail: `${subagent.roleName} (depth ${subagent.depth})`,
           createdAt,
           sourceAgentId: subagent.id,
+          subagentEventType: event.type,
         });
         break;
       case "subagent_started":
@@ -539,6 +945,7 @@ class ExcelorRuntime extends EventEmitter {
           detail: `${subagent.roleName} started work.`,
           createdAt,
           sourceAgentId: subagent.id,
+          subagentEventType: event.type,
         });
         break;
       case "subagent_message":
@@ -550,6 +957,7 @@ class ExcelorRuntime extends EventEmitter {
           detail: shortText(event.message, 320),
           createdAt,
           sourceAgentId: subagent.id,
+          subagentEventType: event.type,
         });
         break;
       case "subagent_waiting":
@@ -561,6 +969,7 @@ class ExcelorRuntime extends EventEmitter {
           detail: event.reason ? shortText(event.reason, 240) : "Waiting for additional input.",
           createdAt,
           sourceAgentId: subagent.id,
+          subagentEventType: event.type,
         });
         break;
       case "subagent_completed":
@@ -572,6 +981,7 @@ class ExcelorRuntime extends EventEmitter {
           detail: shortText(event.output, 320),
           createdAt,
           sourceAgentId: subagent.id,
+          subagentEventType: event.type,
         });
         break;
       case "subagent_failed":
@@ -583,6 +993,7 @@ class ExcelorRuntime extends EventEmitter {
           detail: shortText(event.error, 320),
           createdAt,
           sourceAgentId: subagent.id,
+          subagentEventType: event.type,
         });
         break;
       case "subagent_closed":
@@ -594,6 +1005,7 @@ class ExcelorRuntime extends EventEmitter {
           detail: event.reason ? shortText(event.reason, 240) : "Closed.",
           createdAt,
           sourceAgentId: subagent.id,
+          subagentEventType: event.type,
         });
         break;
     }
@@ -602,6 +1014,7 @@ class ExcelorRuntime extends EventEmitter {
   _upsertSubagentFromEvent(event) {
     const thread = this.bootstrap();
     const existing = thread.subagents.find((agent) => agent.id === event.agent_id);
+    const pendingTaskPrompt = this._pendingSubagentPrompts.get(event.agent_id);
 
     const roleLabel = String(event.role || "");
     const roleName = roleLabel
@@ -624,8 +1037,11 @@ class ExcelorRuntime extends EventEmitter {
         lastOutput: "",
         lastError: "",
         terminalOutcome: "",
+        taskPrompt: pendingTaskPrompt || undefined,
+        conversationId: this.conversationId,
       };
       thread.subagents = [...thread.subagents, created];
+      this._pendingSubagentPrompts.delete(event.agent_id);
       return created;
     }
 
@@ -637,6 +1053,10 @@ class ExcelorRuntime extends EventEmitter {
     existing.status = event.status || existing.status;
     existing.updatedAt = event.at || nowIso();
     existing.lastActivityAt = event.at || nowIso();
+    if (pendingTaskPrompt) {
+      existing.taskPrompt = pendingTaskPrompt;
+      this._pendingSubagentPrompts.delete(event.agent_id);
+    }
 
     if (event.type === "subagent_message") {
       existing.lastMessage = shortText(event.message, 320);
@@ -667,10 +1087,57 @@ class ExcelorRuntime extends EventEmitter {
     this.emit("snapshot", this.getSnapshot());
   }
 
+  resolveSkillProposal(proposalId, options = {}) {
+    const normalizedProposalId = normalizeText(proposalId);
+    if (!normalizedProposalId) {
+      return this.getSnapshot();
+    }
+
+    const thread = this.bootstrap();
+    const proposals = Array.isArray(thread.skillProposals) ? thread.skillProposals : [];
+    const resolvedProposal = proposals.find(
+      (proposal) => normalizeText(proposal?.proposalId) === normalizedProposalId,
+    );
+    if (!resolvedProposal) {
+      return this.getSnapshot();
+    }
+
+    thread.skillProposals = proposals.filter(
+      (proposal) => normalizeText(proposal?.proposalId) !== normalizedProposalId,
+    );
+
+    const resolution = normalizeText(options?.resolution).toLowerCase() === "rejected"
+      ? "rejected"
+      : "accepted";
+    const createdAt = nowIso();
+    const proposalName = normalizeText(options?.name) || normalizeText(resolvedProposal.name) || "proposal";
+    const detail = normalizeText(options?.detail) || normalizeText(resolvedProposal.description);
+
+    this.pushActivity({
+      id: newId("act"),
+      kind: "skill_proposal",
+      status: resolution === "accepted" ? "completed" : "failed",
+      title: resolution === "accepted"
+        ? `Skill approved: ${proposalName}`
+        : `Skill rejected: ${proposalName}`,
+      detail,
+      createdAt,
+      proposalId: normalizedProposalId,
+    });
+
+    if (resolution === "accepted" && options?.emitSkillsChanged !== false) {
+      this.emit("skills-changed");
+    }
+
+    this.emitSnapshot();
+    return this.getSnapshot();
+  }
+
   async resetConversation() {
     this.conversationId = newId("conv");
     this.thread = null;
     this._draftAssistantText = "";
+    this._pendingSubagentPrompts.clear();
     this.emitSnapshot();
     return this.getSnapshot();
   }

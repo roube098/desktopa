@@ -72,21 +72,30 @@ function ConnectorCard({
 
     const status = statusConfig[connector.status];
     const hostname = getHostname(connector.url);
+    const displayName = connector.title || connector.name;
 
     return (
         <div className="connector-card">
             <div className="connector-card-header">
                 <div className="connector-card-info">
                     <div className="connector-card-title-row">
-                        <h3 className="connector-card-title">{connector.name}</h3>
-                        <span className={status.textClassName}>
-                            <span className={status.dotClassName} />
-                            {status.label}
-                        </span>
+                        <h3 className="connector-card-title">{displayName}</h3>
+                        <div className="connector-card-statuses">
+                            {connector.isBuiltIn ? (
+                                <span className="connector-card-badge">Built-in</span>
+                            ) : null}
+                            <span className={status.textClassName}>
+                                <span className={status.dotClassName} />
+                                {status.label}
+                            </span>
+                        </div>
                     </div>
                     <p className="connector-card-hostname" title={connector.url}>
                         {hostname}
                     </p>
+                    {connector.description ? (
+                        <p className="connector-card-description">{connector.description}</p>
+                    ) : null}
                 </div>
 
                 <div className="connector-card-controls">
@@ -98,23 +107,25 @@ function ConnectorCard({
                     >
                         <span className={`connector-toggle-thumb ${connector.isEnabled ? 'enabled' : ''}`} />
                     </button>
-                    <button
-                        type="button"
-                        className={`connector-delete-btn ${confirmDelete ? 'confirm' : ''}`}
-                        onClick={() => {
-                            if (confirmDelete) {
-                                onDelete(connector.id);
-                                setConfirmDelete(false);
-                            } else {
-                                setConfirmDelete(true);
-                            }
-                        }}
-                        title={confirmDelete ? 'Click again to delete' : 'Delete connector'}
-                    >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                        </svg>
-                    </button>
+                    {connector.isBuiltIn ? null : (
+                        <button
+                            type="button"
+                            className={`connector-delete-btn ${confirmDelete ? 'confirm' : ''}`}
+                            onClick={() => {
+                                if (confirmDelete) {
+                                    onDelete(connector.id);
+                                    setConfirmDelete(false);
+                                } else {
+                                    setConfirmDelete(true);
+                                }
+                            }}
+                            title={confirmDelete ? 'Click again to delete' : 'Delete connector'}
+                        >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            </svg>
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -289,6 +300,9 @@ export function ConnectorsPanel() {
         [adding, handleAdd],
     );
 
+    const builtInConnectors = connectors.filter((connector) => connector.isBuiltIn);
+    const customConnectors = connectors.filter((connector) => !connector.isBuiltIn);
+
     if (loading) {
         return (
             <div className="connectors-loading">
@@ -301,57 +315,85 @@ export function ConnectorsPanel() {
     return (
         <div className="connectors-panel">
             <p className="connectors-description">
-                Add remote MCP endpoints here to keep them available in Excelor settings, then
-                verify which ones are reachable before using them in MCP-enabled workflows.
+                Built-in connectors stay available automatically. Add custom MCP endpoints here
+                when you want extra remote tools or resources in desktop workflows.
             </p>
-
-            <div className="connectors-add-form">
-                <Input
-                    type="url"
-                    placeholder="https://mcp-server.example.com"
-                    value={url}
-                    onChange={(event) => {
-                        setUrl(event.target.value);
-                        if (error) setError(null);
-                    }}
-                    onKeyDown={handleKeyDown}
-                    disabled={adding}
-                />
-                <button
-                    type="button"
-                    className="connector-add-btn"
-                    onClick={() => void handleAdd()}
-                    disabled={adding || !url.trim()}
-                >
-                    {adding ? <span className="connector-inline-spinner" /> : null}
-                    {adding ? 'Adding...' : 'Add'}
-                </button>
-            </div>
 
             {error ? <div className="connectors-error">{error}</div> : null}
 
-            {connectors.length > 0 ? (
-                <div className="connectors-grid">
-                    {connectors.map((connector) => (
-                        <ConnectorCard
-                            key={connector.id}
-                            connector={connector}
-                            onCheck={handleCheck}
-                            onDisconnect={handleDisconnect}
-                            onToggleEnabled={handleToggleEnabled}
-                            onDelete={handleDelete}
-                        />
-                    ))}
+            {builtInConnectors.length > 0 ? (
+                <section className="connectors-section">
+                    <div className="connectors-section-header">
+                        <h3>Built-In</h3>
+                        <p>Enabled by default and kept in sync with desktop updates.</p>
+                    </div>
+                    <div className="connectors-grid">
+                        {builtInConnectors.map((connector) => (
+                            <ConnectorCard
+                                key={connector.id}
+                                connector={connector}
+                                onCheck={handleCheck}
+                                onDisconnect={handleDisconnect}
+                                onToggleEnabled={handleToggleEnabled}
+                                onDelete={handleDelete}
+                            />
+                        ))}
+                    </div>
+                </section>
+            ) : null}
+
+            <section className="connectors-section">
+                <div className="connectors-section-header">
+                    <h3>Custom</h3>
+                    <p>Add remote MCP endpoints that are not bundled with Excelor.</p>
                 </div>
-            ) : (
-                <div className="connectors-empty">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                        <path d="M8 12h8M6 8h12M6 16h12" />
-                        <rect x="3" y="4" width="18" height="16" rx="2" />
-                    </svg>
-                    <p>No MCP connectors added yet</p>
+
+                <div className="connectors-add-form">
+                    <Input
+                        type="url"
+                        placeholder="https://mcp-server.example.com"
+                        value={url}
+                        onChange={(event) => {
+                            setUrl(event.target.value);
+                            if (error) setError(null);
+                        }}
+                        onKeyDown={handleKeyDown}
+                        disabled={adding}
+                    />
+                    <button
+                        type="button"
+                        className="connector-add-btn"
+                        onClick={() => void handleAdd()}
+                        disabled={adding || !url.trim()}
+                    >
+                        {adding ? <span className="connector-inline-spinner" /> : null}
+                        {adding ? 'Adding...' : 'Add'}
+                    </button>
                 </div>
-            )}
+
+                {customConnectors.length > 0 ? (
+                    <div className="connectors-grid">
+                        {customConnectors.map((connector) => (
+                            <ConnectorCard
+                                key={connector.id}
+                                connector={connector}
+                                onCheck={handleCheck}
+                                onDisconnect={handleDisconnect}
+                                onToggleEnabled={handleToggleEnabled}
+                                onDelete={handleDelete}
+                            />
+                        ))}
+                    </div>
+                ) : (
+                    <div className="connectors-empty">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                            <path d="M8 12h8M6 8h12M6 16h12" />
+                            <rect x="3" y="4" width="18" height="16" rx="2" />
+                        </svg>
+                        <p>No custom MCP connectors added yet</p>
+                    </div>
+                )}
+            </section>
         </div>
     );
 }

@@ -15,7 +15,8 @@
         "forceConsistentCasingInFileNames": true,
         "resolveJsonModule": true,
         "isolatedModules": true,
-        "noEmit": true
+        "noEmit": true,
+        "allowJs": true
     },
     "include": [
         "src/**/*.ts",

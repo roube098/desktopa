@@ -1,4 +1,4 @@
-﻿import type { AgentConfig, AgentTool } from '../types/agent-types';
+import type { AgentConfig, AgentTool } from '../types/agent-types';
 import {
     buildOnlyOfficePresentationPrompt,
     getOnlyOfficePresentationDescription,
@@ -46,18 +46,18 @@ const spreadsheetAgent: AgentConfig = {
     description: 'Specialized in spreadsheet operations Ã¢â‚¬â€ formulas, cell formatting, charts, and data analysis.',
     contextValue: 'spreadsheet',
     fileTypes: ['.xlsx', '.xls', '.csv'],
-    systemPrompt: `You are an expert Spreadsheet Assistant for OnlyOffice Spreadsheets.
-You help users build, edit, format, and analyze spreadsheet data using tool calls.
+    systemPrompt: `You are an expert Spreadsheet Assistant for workspace .xlsx files (openpyxl).
+You help users build, edit, format, and analyze spreadsheet data using tool calls. Tools read and write the workbook on disk; omit path when the active desktop .xlsx should be used. Sheet defaults to Sheet1 when omitted.
 
 ## Capabilities
 - Write data and formulas to cells (individual or bulk 2D arrays)
 - Create formulas (SUM, VLOOKUP, IF, INDEX/MATCH, XLOOKUP, etc.)
 - Format cells (bold, colors, borders, number formats, alignment)
-- Add/remove rows and columns
+- Add/remove rows and columns (1-based row/column indices, Excel-style)
 - Create and manage multiple worksheets
-- Create charts from data ranges (bar, line, pie, scatter, area)
-- Read and validate sheet content (inspect values or formulas for errors)
-- Sort and filter data
+- Create charts from data ranges (supported: bar, line, pie; first row series names, first column categories when multi-column)
+- Read and validate sheet content (inspect values or formulas for errors; reads cap at 500x50 cells)
+- Sort and filter data (manual via writes; no dedicated sort tool)
 
 ## Mandatory Workflow Per Sheet
 
@@ -173,8 +173,10 @@ Be concise and precise with cell references (e.g. A1, B2:D10).`,
         ...GENERATION_TOOLS,
         {
             name: 'setCellValue',
-            description: 'Set the value of a single cell',
+            description: 'Set the value of a single cell in the workspace .xlsx',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
+                { name: 'sheet', type: 'string', description: 'Worksheet name; defaults to Sheet1' },
                 { name: 'cell', type: 'string', description: 'Cell reference (e.g. "A1")', required: true },
                 { name: 'value', type: 'string', description: 'Value to set', required: true },
             ],
@@ -183,6 +185,7 @@ Be concise and precise with cell references (e.g. A1, B2:D10).`,
             name: 'writeCells',
             description: 'Write a 2D array of values and/or formulas to a range. Every row MUST have the same number of columns as the range width.',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
                 { name: 'sheet', type: 'string', description: 'Target sheet name (e.g. "Sheet1")', required: true },
                 { name: 'range', type: 'string', description: 'Target range (e.g. "B2:F10")', required: true },
                 { name: 'values', type: 'array', description: 'Rectangular 2D array of values. Formulas start with "=". Pad short rows with "".', required: true },
@@ -192,6 +195,8 @@ Be concise and precise with cell references (e.g. A1, B2:D10).`,
             name: 'setCellFormula',
             description: 'Set a formula in a single cell',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
+                { name: 'sheet', type: 'string', description: 'Worksheet name; defaults to Sheet1' },
                 { name: 'cell', type: 'string', description: 'Cell reference (e.g. "A1")', required: true },
                 { name: 'formula', type: 'string', description: 'Formula to set (e.g. "=SUM(A1:A10)")', required: true },
             ],
@@ -200,6 +205,8 @@ Be concise and precise with cell references (e.g. A1, B2:D10).`,
             name: 'formatCells',
             description: 'Apply formatting to a single contiguous range. Make separate calls for non-contiguous ranges.',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
+                { name: 'sheet', type: 'string', description: 'Worksheet name; defaults to Sheet1' },
                 { name: 'range', type: 'string', description: 'Single contiguous range (e.g. "A1:C5"). No comma-separated ranges.', required: true },
                 { name: 'bold', type: 'boolean', description: 'Set bold' },
                 { name: 'italic', type: 'boolean', description: 'Set italic' },
@@ -213,28 +220,34 @@ Be concise and precise with cell references (e.g. A1, B2:D10).`,
         },
         {
             name: 'insertRowsColumns',
-            description: 'Insert rows or columns at the specified position',
+            description: 'Insert rows or columns before the given 1-based index (Excel-style)',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
+                { name: 'sheet', type: 'string', description: 'Worksheet name; defaults to Sheet1' },
                 { name: 'type', type: 'string', description: '"row" or "column"', required: true },
-                { name: 'index', type: 'number', description: 'Position index (0-based)', required: true },
+                { name: 'index', type: 'number', description: '1-based row or column index before which to insert', required: true },
                 { name: 'count', type: 'number', description: 'Number to insert', required: true },
             ],
         },
         {
             name: 'deleteRowsColumns',
-            description: 'Delete rows or columns at the specified position',
+            description: 'Delete rows or columns starting at the given 1-based index',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
+                { name: 'sheet', type: 'string', description: 'Worksheet name; defaults to Sheet1' },
                 { name: 'type', type: 'string', description: '"row" or "column"', required: true },
-                { name: 'index', type: 'number', description: 'Starting position index (0-based)', required: true },
+                { name: 'index', type: 'number', description: '1-based starting row or column index', required: true },
                 { name: 'count', type: 'number', description: 'Number to delete', required: true },
             ],
         },
         {
             name: 'createChart',
-            description: 'Create a chart from a data range. Place charts adjacent to the data table.',
+            description: 'Create a bar, line, or pie chart from a data range (openpyxl). Multi-column: row 1 = series names, column 1 = categories.',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
+                { name: 'sheet', type: 'string', description: 'Worksheet name; defaults to Sheet1' },
                 { name: 'dataRange', type: 'string', description: 'Data range (e.g. "A1:D10")', required: true },
-                { name: 'chartType', type: 'string', description: 'Chart type: bar, line, pie, scatter, area, columnClustered, columnStacked', required: true },
+                { name: 'chartType', type: 'string', description: 'bar, line, or pie', required: true },
                 { name: 'title', type: 'string', description: 'Chart title (always include a descriptive title)' },
                 { name: 'position', type: 'string', description: 'Cell to place the chart at (e.g. "G2")' },
             ],
@@ -243,6 +256,7 @@ Be concise and precise with cell references (e.g. A1, B2:D10).`,
             name: 'createSheet',
             description: 'Create a new worksheet. After creating, immediately populate it with writeCells.',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
                 { name: 'name', type: 'string', description: 'Name for the new worksheet', required: true },
                 { name: 'activate', type: 'boolean', description: 'Whether to activate (switch to) the new sheet after creation' },
             ],
@@ -251,6 +265,7 @@ Be concise and precise with cell references (e.g. A1, B2:D10).`,
             name: 'readSheet',
             description: 'Read sheet content and check for errors. Use "values" to verify data, "formulas" to debug formula errors.',
             parameters: [
+                { name: 'path', type: 'string', description: 'Optional workspace path to .xlsx; defaults to active file' },
                 { name: 'sheet', type: 'string', description: 'Name of the sheet to read', required: true },
                 { name: 'previewType', type: 'string', description: '"values" to see calculated results, "formulas" to see raw formulas for debugging' },
             ],

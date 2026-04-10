@@ -145,6 +145,24 @@ function buildReadyTimeoutMessage({ healthUrl, readyTimeoutMs, stdoutTail, stder
   return details.join("\n");
 }
 
+function buildEarlyExitMessage({ code, signal, stdoutTail, stderrTail }) {
+  const details = [
+    `Excelor server exited before it became ready (code: ${code ?? "null"}, signal: ${signal ?? "null"}).`,
+  ];
+
+  const stdoutText = String(stdoutTail || "").trim();
+  const stderrText = String(stderrTail || "").trim();
+
+  if (stdoutText) {
+    details.push(`stdout tail:\n${stdoutText}`);
+  }
+  if (stderrText) {
+    details.push(`stderr tail:\n${stderrText}`);
+  }
+
+  return details.join("\n");
+}
+
 function probeExcelorHealth(url, options = {}) {
   const requestTimeoutMs = Number.isFinite(options.requestTimeoutMs)
     ? Number(options.requestTimeoutMs)
@@ -421,6 +439,17 @@ class ExcelorProcess extends EventEmitter {
     });
 
     this.proc.on("exit", (code, signal) => {
+      const exitedBeforeReady = !this.stopped && !this._readyEmitted && !this._launchFailed;
+      if (exitedBeforeReady) {
+        const message = buildEarlyExitMessage({
+          code,
+          signal,
+          stdoutTail: this._stdoutTail,
+          stderrTail: this._stderrTail,
+        });
+        this._emitStartupError(new Error(message), { preventRestart: true });
+      }
+
       this._clearStartupTimers();
       this.proc = null;
       this.emit("exit", { code, signal });

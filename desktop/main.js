@@ -1,3 +1,12 @@
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream && typeof stream.on === "function") {
+    stream.on("error", (err) => {
+      if (err && err.code === "EPIPE") return;
+      throw err;
+    });
+  }
+}
+
 const { app, BrowserWindow, WebContentsView, ipcMain, shell, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -8,6 +17,8 @@ const DockerManager = require("./lib/docker-manager");
 const TrayManager = require("./lib/tray-manager");
 const providerStore = require("./lib/provider-store");
 const runtimeConfigStore = require("./lib/runtime-config-store");
+const { McpAppSessionManager } = require("./lib/mcp-app-session-manager");
+const { pluginManager } = require("./lib/plugin-manager");
 const { skillsManager } = require("./lib/skills-manager");
 const ExcelorRuntime = require("./lib/excelor-runtime");
 const { resolveExcelorRuntimePaths } = require("./lib/excelor-runtime-paths");
@@ -32,20 +43,10 @@ const {
   isOnlyOfficeEditorRequest,
 } = require("./lib/onlyoffice-editor-bridge");
 
-const Store = require("electron-store");
 const pdfParse = require("pdf-parse");
 
-const pdfStore = new Store({
-  name: "excelor-pdf",
-  defaults: {
-    documentSpecificData: {},
-  },
-});
-
-function sanitizePdfStorePath(filePath) {
-  const s = typeof filePath === "string" ? filePath : (filePath?.path && typeof filePath.path === "string" ? filePath.path : "");
-  return s.replace(/\./g, "_").trim() || null;
-}
+// Avoid Windows white-screen compositor failures on some Electron/GPU setups.
+app.disableHardwareAcceleration();
 
 const ROOT = path.resolve(__dirname, "..");
 const WORKSPACE_DIR = path.join(require("os").homedir(), "Documents", "My Workspace");
@@ -61,6 +62,45 @@ const ONLYOFFICE_CONTAINER_EXAMPLE_FILES_ROOT = "/var/lib/onlyoffice/documentser
 const ONLYOFFICE_LEGACY_CLIENT_DIR = "172.19.0.1";
 const ONLYOFFICE_CLIENT_PATH_CACHE_TTL_MS = 30_000;
 const INITIAL_BROWSER_URL = "about:blank";
+
+/** Wait until the Vite dev server accepts HTTP (avoids a blank window when Electron wins the startup race). */
+function waitForDevServer(devUrl, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(devUrl);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const deadline = Date.now() + timeoutMs;
+    const poll = () => {
+      if (Date.now() >= deadline) {
+        reject(new Error(`Timed out waiting for dev server at ${devUrl}`));
+        return;
+      }
+      const req = http.get(
+        {
+          hostname: u.hostname,
+          port: u.port || (u.protocol === "https:" ? 443 : 80),
+          path: u.pathname || "/",
+        },
+        (res) => {
+          res.resume();
+          resolve();
+        },
+      );
+      req.on("error", () => {
+        setTimeout(poll, 300);
+      });
+      req.setTimeout(2500, () => {
+        req.destroy();
+        setTimeout(poll, 300);
+      });
+    };
+    poll();
+  });
+}
 const HIDDEN_BOUNDS = { x: -10000, y: -10000, width: 1, height: 1 };
 const ONLYOFFICE_WORKSPACE_EXTS = new Set([
   ".xlsx",
@@ -86,19 +126,30 @@ const EXCELOR_SCOPE_PORTS = {
   main: parseInt(process.env.EXCELOR_MAIN_PORT ?? "27182", 10),
   onlyoffice: parseInt(process.env.EXCELOR_ONLYOFFICE_PORT ?? "27183", 10),
 };
+const MCP_APP_DEFAULT_TITLE = "tldraw Canvas";
 let excelorRuntimes = {};
 let excelorContexts = {
   main: {
     documentContext: "spreadsheet",
     editorLoaded: false,
     editorUrl: "",
+    activeFileName: "",
+    activeWorkspacePath: "",
+    mcpAppContext: null,
   },
   onlyoffice: {
     documentContext: "spreadsheet",
     editorLoaded: false,
     editorUrl: "",
+    activeFileName: "",
+    activeWorkspacePath: "",
+    mcpAppContext: null,
   },
 };
+const mcpAppSessionManager = new McpAppSessionManager();
+let activeMcpAppState = null;
+const readyMcpAppSessions = new Set();
+const readyMcpAppWaiters = new Map();
 const pendingOnlyOfficeToolRequests = new Map();
 let browserBridgeServer = null;
 let browserBridgePort = null;
@@ -109,6 +160,48 @@ let browserToolActiveTab = -1;
 let onlyOfficeClientPathCache = null;
 let hasLoggedOnlyOfficeClientPaths = false;
 let onlyOfficeEditorInterceptorInstalled = false;
+let isRecoveringMainWindow = false;
+
+async function loadMainWindowContent() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    const devUrl = process.env.VITE_DEV_SERVER_URL;
+    try {
+      console.log("[electron] Waiting for Vite dev server at", devUrl);
+      await waitForDevServer(devUrl);
+      console.log("[electron] Dev server reachable, loading renderer.");
+    } catch (err) {
+      console.error("[electron] Dev server wait failed:", err && err.message ? err.message : err);
+    }
+    await mainWindow.loadURL(devUrl);
+    return;
+  }
+
+  await mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
+}
+
+function recoverMainWindow(reason) {
+  if (!mainWindow || mainWindow.isDestroyed() || isRecoveringMainWindow) return;
+  isRecoveringMainWindow = true;
+  console.warn(`[electron] Recovering main window after ${reason}`);
+  setTimeout(() => {
+    void loadMainWindowContent()
+      .catch((error) => {
+        console.error("[electron] Main window recovery failed:", error && error.message ? error.message : error);
+      })
+      .finally(() => {
+        isRecoveringMainWindow = false;
+      });
+  }, 300);
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isVisible()) return;
+  mainWindow.show();
+  sendBrowserState();
+}
 
 function sendExcelorBrowserToolFocus() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -127,6 +220,8 @@ function getBrowserBridgeEnv() {
     EXCELOR_BROWSER_BRIDGE_TOKEN: browserBridgeToken,
     EXCELOR_EDITOR_BRIDGE_URL: `http://127.0.0.1:${browserBridgePort}`,
     EXCELOR_EDITOR_BRIDGE_TOKEN: browserBridgeToken,
+    EXCELOR_MCP_APP_BRIDGE_URL: `http://127.0.0.1:${browserBridgePort}`,
+    EXCELOR_MCP_APP_BRIDGE_TOKEN: browserBridgeToken,
   };
 }
 
@@ -788,6 +883,76 @@ async function startBrowserBridge() {
       return;
     }
 
+    if (method === "POST" && url.pathname === "/mcp-app/tool") {
+      const token = req.headers["x-excelor-mcp-app-token"];
+      if (token !== browserBridgeToken) {
+        writeJson(res, 401, { error: "Unauthorized MCP app bridge request." });
+        return;
+      }
+
+      try {
+        const payload = await readJsonBody(req);
+        const connectorId = normalizeText(payload?.connectorId);
+        const toolName = normalizeText(payload?.toolName);
+        const args = isPlainObject(payload?.args) ? payload.args : {};
+        const connector = findMcpConnector(connectorId);
+
+        if (!connector || connector.isEnabled === false) {
+          writeJson(res, 404, { error: "MCP connector not found or disabled." });
+          return;
+        }
+
+        if (!toolName) {
+          writeJson(res, 400, { error: "toolName is required." });
+          return;
+        }
+
+        const sessionInfo = await mcpAppSessionManager.openSession(connector);
+        // #region agent log
+        fetch("http://127.0.0.1:7547/ingest/445f944e-452a-47ad-a4e0-f4df5fd886e1", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "182468" }, body: JSON.stringify({ sessionId: "182468", location: "main.js:bridge-mcp-app-tool", message: "openSession completed for tool", data: { hypothesisId: "H4", bridgeSessionId: sessionInfo && sessionInfo.sessionId, connectorId: connector.id, toolName, keysAfterOpen: mcpAppSessionManager.debugListSessionIds() }, timestamp: Date.now() }) }).catch(() => {});
+        // #endregion
+        const invocationId = `mcp-app-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        let result;
+
+        if (normalizeText(connector.builtInAppId) === "tldraw" && toolName === "exec") {
+          setActiveMcpAppState(
+            buildPendingMcpAppState(payload?.scope || "main", connector, sessionInfo, toolName, args, invocationId, {
+              pending: true,
+              dispatchToolInput: false,
+            }),
+          );
+          await waitForMcpAppSessionReady(sessionInfo.sessionId);
+          const resultPromise = mcpAppSessionManager.callTool(sessionInfo.sessionId, toolName, args);
+          setActiveMcpAppState(
+            buildPendingMcpAppState(payload?.scope || "main", connector, sessionInfo, toolName, args, invocationId, {
+              pending: true,
+              dispatchToolInput: true,
+            }),
+          );
+          result = await resultPromise;
+        } else {
+          result = await mcpAppSessionManager.callTool(sessionInfo.sessionId, toolName, args);
+        }
+
+        writeJson(res, 200, {
+          success: true,
+          result,
+          appSession: {
+            sessionId: sessionInfo.sessionId,
+            connectorId: connector.id,
+            connectorName: connector.name,
+            connectorTitle: connector.title || connector.name,
+            resourceUri: findConnectorToolResourceUri(connector, toolName),
+            builtInAppId: connector.builtInAppId,
+            invocationId,
+          },
+        });
+      } catch (error) {
+        writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     writeJson(res, 404, { error: "Not found." });
   });
 
@@ -879,6 +1044,420 @@ function getExcelorContext(scope = "main") {
   return excelorContexts[normalizedScope] || excelorContexts.main;
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeText(value) {
+  return String(value || "").trim();
+}
+
+function extractTextContentBlocks(content) {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((entry) => (
+      isPlainObject(entry) && entry.type === "text" && typeof entry.text === "string"
+        ? entry.text.trim()
+        : ""
+    ))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function summarizeMcpAppContent(content, maxLength = 600) {
+  const text = extractTextContentBlocks(content);
+  if (!text) {
+    return "";
+  }
+
+  return text.length > maxLength
+    ? `${text.slice(0, maxLength - 1)}...`
+    : text;
+}
+
+function getConnectorToolUiResourceUri(tool) {
+  if (!isPlainObject(tool)) {
+    return "";
+  }
+
+  const nestedMeta = isPlainObject(tool._meta) && isPlainObject(tool._meta.ui)
+    ? tool._meta.ui
+    : null;
+  if (nestedMeta && typeof nestedMeta.resourceUri === "string" && nestedMeta.resourceUri.trim()) {
+    return nestedMeta.resourceUri.trim();
+  }
+
+  return "";
+}
+
+function findMcpConnector(connectorId) {
+  return runtimeConfigStore.getMcpConnectors()
+    .find((connector) => connector.id === connectorId) || null;
+}
+
+function findConnectorToolResourceUri(connector, toolName) {
+  const tools = Array.isArray(connector?.discovery?.tools) ? connector.discovery.tools : [];
+  const match = tools.find((tool) => normalizeText(tool?.name) === normalizeText(toolName));
+  return (
+    getConnectorToolUiResourceUri(match)
+    || normalizeText(connector?.resourceUri)
+    || ""
+  );
+}
+
+function buildMcpAppDesktopContext(state) {
+  if (!state) {
+    return null;
+  }
+
+  const modelContext = isPlainObject(state.modelContext) ? state.modelContext : {};
+  const structuredContent = isPlainObject(modelContext.structuredContent)
+    ? modelContext.structuredContent
+    : isPlainObject(state.toolResult?.structuredContent)
+      ? state.toolResult.structuredContent
+      : {};
+  const shapeCount = Array.isArray(structuredContent.shapes)
+    ? structuredContent.shapes.length
+    : undefined;
+  const summaryText = (
+    summarizeMcpAppContent(modelContext.content)
+    || summarizeMcpAppContent(state.toolResult?.content)
+  );
+
+  return {
+    appId: normalizeText(state.builtInAppId),
+    connectorId: normalizeText(state.connectorId),
+    connectorName: normalizeText(state.connectorName),
+    title: normalizeText(state.title),
+    sessionId: normalizeText(state.sessionId),
+    resourceUri: normalizeText(state.resourceUri),
+    canvasId: normalizeText(
+      structuredContent.canvasId
+      || state.toolResult?.structuredContent?.canvasId
+      || state.toolArguments?.canvasId,
+    ) || undefined,
+    checkpointId: normalizeText(
+      structuredContent.checkpointId
+      || state.toolResult?.structuredContent?.checkpointId,
+    ) || undefined,
+    summaryText: summaryText || undefined,
+    shapeCount: Number.isFinite(shapeCount) ? shapeCount : undefined,
+    updatedAt: state.updatedAt,
+  };
+}
+
+function syncActiveMcpAppDesktopContext() {
+  const nextContexts = { ...excelorContexts };
+  for (const scope of EXCELOR_SCOPES) {
+    nextContexts[scope] = {
+      ...getExcelorContext(scope),
+      mcpAppContext: activeMcpAppState && activeMcpAppState.scope === scope
+        ? buildMcpAppDesktopContext(activeMcpAppState)
+        : null,
+    };
+  }
+  excelorContexts = nextContexts;
+
+  for (const scope of EXCELOR_SCOPES) {
+    const runtime = getExcelorRuntime(scope);
+    if (runtime) {
+      emitExcelorSnapshot(scope, runtime.getSnapshot());
+    }
+  }
+}
+
+function emitMcpAppState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("mcp-app-state-changed", activeMcpAppState);
+}
+
+function markMcpAppSessionReady(sessionId) {
+  const normalizedSessionId = normalizeText(sessionId);
+  if (!normalizedSessionId) {
+    return;
+  }
+
+  readyMcpAppSessions.add(normalizedSessionId);
+  const waiters = readyMcpAppWaiters.get(normalizedSessionId) || [];
+  readyMcpAppWaiters.delete(normalizedSessionId);
+  for (const waiter of waiters) {
+    clearTimeout(waiter.timeoutId);
+    try {
+      waiter.resolve();
+    } catch (_error) {
+      // Ignore waiter resolution failures.
+    }
+  }
+}
+
+function clearMcpAppSessionReady(sessionId) {
+  const normalizedSessionId = normalizeText(sessionId);
+  if (!normalizedSessionId) {
+    return;
+  }
+
+  readyMcpAppSessions.delete(normalizedSessionId);
+  const waiters = readyMcpAppWaiters.get(normalizedSessionId) || [];
+  readyMcpAppWaiters.delete(normalizedSessionId);
+  for (const waiter of waiters) {
+    clearTimeout(waiter.timeoutId);
+    try {
+      waiter.reject(new Error(`MCP app session '${normalizedSessionId}' was cleared before it became ready.`));
+    } catch (_error) {
+      // Ignore waiter rejection failures.
+    }
+  }
+}
+
+async function waitForMcpAppSessionReady(sessionId, timeoutMs = 15000) {
+  const normalizedSessionId = normalizeText(sessionId);
+  if (!normalizedSessionId) {
+    throw new Error("MCP app session id is required.");
+  }
+
+  if (readyMcpAppSessions.has(normalizedSessionId)) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      const waiters = readyMcpAppWaiters.get(normalizedSessionId) || [];
+      readyMcpAppWaiters.set(
+        normalizedSessionId,
+        waiters.filter((entry) => entry.resolve !== resolve),
+      );
+      reject(new Error(`Timed out waiting for MCP app session '${normalizedSessionId}' to become ready.`));
+    }, timeoutMs);
+
+    const waiters = readyMcpAppWaiters.get(normalizedSessionId) || [];
+    readyMcpAppWaiters.set(normalizedSessionId, [
+      ...waiters,
+      { resolve, reject, timeoutId },
+    ]);
+  });
+}
+
+function setActiveMcpAppState(nextState) {
+  const previousSessionId = normalizeText(activeMcpAppState?.sessionId);
+  const nextSessionId = normalizeText(nextState?.sessionId);
+  if (nextSessionId && previousSessionId !== nextSessionId) {
+    clearMcpAppSessionReady(nextSessionId);
+  }
+  activeMcpAppState = nextState
+    ? {
+        ...nextState,
+        invocationId: normalizeText(nextState.invocationId),
+        pending: nextState.pending === true,
+        dispatchToolInput: nextState.dispatchToolInput === true,
+        toolArguments: isPlainObject(nextState.toolArguments) ? nextState.toolArguments : {},
+        toolResult: isPlainObject(nextState.toolResult) ? {
+          ...nextState.toolResult,
+          content: Array.isArray(nextState.toolResult.content) ? nextState.toolResult.content : [],
+        } : {
+          content: [],
+          structuredContent: undefined,
+          meta: undefined,
+        },
+      }
+    : null;
+  syncActiveMcpAppDesktopContext();
+  emitMcpAppState();
+}
+
+function clearActiveMcpAppState(sessionId = "") {
+  if (!activeMcpAppState) {
+    return;
+  }
+  if (sessionId && normalizeText(activeMcpAppState.sessionId) !== normalizeText(sessionId)) {
+    return;
+  }
+  clearMcpAppSessionReady(activeMcpAppState.sessionId);
+  setActiveMcpAppState(null);
+}
+
+function buildPendingMcpAppState(scope, connector, sessionInfo, toolName, toolArguments, invocationId, options = {}) {
+  const existingState = activeMcpAppState && normalizeText(activeMcpAppState.sessionId) === normalizeText(sessionInfo?.sessionId)
+    ? activeMcpAppState
+    : null;
+  const title = normalizeText(
+    sessionInfo?.serverInfo?.title
+    || connector?.title
+    || connector?.name,
+  ) || MCP_APP_DEFAULT_TITLE;
+
+  return {
+    scope: normalizeExcelorScope(scope),
+    sessionId: normalizeText(sessionInfo?.sessionId),
+    connectorId: normalizeText(connector?.id),
+    connectorName: normalizeText(connector?.name || "MCP App"),
+    connectorTitle: normalizeText(connector?.title || connector?.name || title),
+    resourceUri: normalizeText(findConnectorToolResourceUri(connector, toolName) || connector?.resourceUri),
+    builtInAppId: normalizeText(connector?.builtInAppId),
+    title,
+    toolName: normalizeText(toolName),
+    toolArguments: isPlainObject(toolArguments) ? toolArguments : {},
+    toolResult: existingState?.toolResult || {
+      content: [],
+      structuredContent: undefined,
+      meta: undefined,
+    },
+    modelContext: existingState?.modelContext || null,
+    invocationId: normalizeText(invocationId),
+    pending: options.pending !== false,
+    dispatchToolInput: options.dispatchToolInput === true,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function buildMcpAppStateFromToolPayload(scope, payload) {
+  const connector = isPlainObject(payload?.connector) ? payload.connector : {};
+  const appSession = isPlainObject(payload?.appSession) ? payload.appSession : {};
+  const sessionId = normalizeText(appSession.sessionId);
+  const resourceUri = normalizeText(appSession.resourceUri);
+  if (!sessionId || !resourceUri) {
+    return null;
+  }
+
+  const existingState = activeMcpAppState && normalizeText(activeMcpAppState.sessionId) === sessionId
+    ? activeMcpAppState
+    : null;
+  const title = normalizeText(
+    appSession.title
+    || appSession.connectorTitle
+    || connector.title
+    || connector.name,
+  ) || MCP_APP_DEFAULT_TITLE;
+
+  return {
+    scope: normalizeExcelorScope(scope),
+    sessionId,
+    connectorId: normalizeText(appSession.connectorId || connector.id),
+    connectorName: normalizeText(appSession.connectorName || connector.name || "MCP App"),
+    connectorTitle: normalizeText(appSession.connectorTitle || connector.title || connector.name || title),
+    resourceUri,
+    builtInAppId: normalizeText(appSession.builtInAppId || connector.builtInAppId),
+    title,
+    toolName: normalizeText(payload.remoteToolName || payload.toolName),
+    toolArguments: isPlainObject(payload.toolArguments) ? payload.toolArguments : {},
+    toolResult: {
+      content: Array.isArray(payload.content) ? payload.content : [],
+      structuredContent: payload.structuredContent,
+      meta: isPlainObject(payload.meta) ? payload.meta : undefined,
+    },
+    modelContext: existingState?.modelContext || null,
+    invocationId: normalizeText(appSession.invocationId || existingState?.invocationId),
+    pending: false,
+    dispatchToolInput: false,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function handleRuntimeMcpAppToolResult(scope, payload) {
+  const nextState = buildMcpAppStateFromToolPayload(scope, payload);
+  if (!nextState) {
+    return;
+  }
+
+  if (normalizeText(nextState.builtInAppId) !== "tldraw") {
+    return;
+  }
+
+  setActiveMcpAppState(nextState);
+  // #region agent log
+  fetch("http://127.0.0.1:7547/ingest/445f944e-452a-47ad-a4e0-f4df5fd886e1", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "182468" }, body: JSON.stringify({ sessionId: "182468", location: "main.js:handleRuntimeMcpAppToolResult", message: "dexter runtime set tldraw mcp state", data: { hypothesisId: "H5", emittedSessionId: normalizeText(nextState.sessionId), knownSessionIds: mcpAppSessionManager.debugListSessionIds(), hasEmittedInMap: mcpAppSessionManager.getSession(nextState.sessionId) != null }, timestamp: Date.now() }) }).catch(() => {});
+  // #endregion
+}
+
+function extractMcpAppMessageText(content) {
+  return extractTextContentBlocks(content);
+}
+
+function normalizeApprovedSkillProposalPayload(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === "object" ? rawPayload : {};
+  const action = String(payload.action || "").trim().toLowerCase();
+  const proposalId = String(payload.proposalId || "").trim();
+  const name = String(payload.name || "").trim();
+  const description = String(payload.description || "").trim();
+  const body = String(payload.body || "").trim();
+
+  if (action !== "create" && action !== "update") {
+    throw new Error("Skill approval action must be create or update.");
+  }
+  if (!proposalId) {
+    throw new Error("Skill approval requires a proposalId.");
+  }
+  if (!name || !description || !body) {
+    throw new Error("Skill approval requires name, description, and body.");
+  }
+
+  const normalized = {
+    proposalId,
+    action,
+    name,
+    description,
+    body,
+  };
+
+  if (action === "update") {
+    const skillNameToUpdate = String(payload.skillNameToUpdate || "").trim();
+    if (!skillNameToUpdate) {
+      throw new Error("Skill approval updates require skillNameToUpdate.");
+    }
+    normalized.skillNameToUpdate = skillNameToUpdate;
+  }
+
+  return normalized;
+}
+
+async function approveSkillProposalViaServer(payload, scope = "main") {
+  const normalizedScope = normalizeExcelorScope(scope);
+  const port = EXCELOR_SCOPE_PORTS[normalizedScope] || EXCELOR_SCOPE_PORTS.main;
+  const response = await fetch(`http://localhost:${port}/skills/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  let result = null;
+  try {
+    result = await response.json();
+  } catch (_error) {
+    result = null;
+  }
+
+  if (!result || typeof result !== "object") {
+    return {
+      ok: false,
+      error: `Skill approval endpoint returned ${response.status}.`,
+      skillsChanged: false,
+    };
+  }
+
+  return result;
+}
+
+function updateActiveEditorFileContext(filePath, editorUrl = "") {
+  const normalizedPath = typeof filePath === "string" && filePath.trim()
+    ? path.resolve(filePath)
+    : "";
+  const activeFileName = normalizedPath ? path.basename(normalizedPath) : "";
+
+  const nextContexts = { ...excelorContexts };
+  for (const scope of EXCELOR_SCOPES) {
+    nextContexts[scope] = {
+      ...getExcelorContext(scope),
+      activeFileName,
+      activeWorkspacePath: normalizedPath,
+      ...(editorUrl ? { editorUrl } : {}),
+    };
+  }
+  excelorContexts = nextContexts;
+}
+
 function getEnabledSkillNames() {
   try {
     const skills = skillsManager.getSkillRuntimeConfig();
@@ -889,6 +1468,17 @@ function getEnabledSkillNames() {
   } catch (_error) {
     return [];
   }
+}
+
+async function refreshExcelorPluginRuntimes() {
+  const runtimes = Object.values(excelorRuntimes || {}).filter(Boolean);
+  await Promise.all(
+    runtimes.map((runtime) =>
+      typeof runtime.refreshPlugins === "function"
+        ? runtime.refreshPlugins().catch(() => null)
+        : Promise.resolve(null),
+    ),
+  );
 }
 
 function emitExcelorSnapshot(scope, snapshot) {
@@ -1134,6 +1724,7 @@ async function openWorkspaceFileInEditor(filePath) {
   const copied = await copyWorkspaceFileToOnlyOffice(filePath);
   const fileName = copied.fileName;
   const editorUrl = buildEditorUrl(fileName);
+  updateActiveEditorFileContext(filePath, editorUrl);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("navigate-editor", editorUrl);
   }
@@ -1502,7 +2093,7 @@ function createBrowserView() {
   loadInitialBrowserPage();
 }
 
-function createWindow() {
+async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -1520,18 +2111,48 @@ function createWindow() {
     show: false,
   });
 
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, "dist", "index.html"));
-  }
+  mainWindow.webContents.on("dom-ready", () => {
+    console.log("[electron] Main window DOM ready");
+  });
+
+  mainWindow.webContents.on("did-finish-load", () => {
+    console.log("[electron] Main window finished load:", mainWindow.webContents.getURL());
+  });
+
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    console.error(
+      `[electron] Main window did-fail-load code=${errorCode} mainFrame=${isMainFrame} url=${validatedURL} error=${errorDescription}`,
+    );
+    if (isMainFrame && errorCode !== -3) {
+      recoverMainWindow(`did-fail-load (${errorCode})`);
+    }
+  });
+
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.error("[electron] Main window render-process-gone:", details);
+    recoverMainWindow(`render-process-gone (${details?.reason || "unknown"})`);
+  });
+
+  mainWindow.webContents.on("unresponsive", () => {
+    console.warn("[electron] Main window became unresponsive");
+  });
+
+  mainWindow.webContents.on("responsive", () => {
+    console.log("[electron] Main window became responsive again");
+  });
+
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    if (level <= 1) {
+      console.error(`[renderer:${level}] ${sourceId}:${line} ${message}`);
+    }
+  });
+
+  await loadMainWindowContent();
 
   createBrowserView();
 
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
-    sendBrowserState();
-  });
+  mainWindow.once("ready-to-show", showMainWindow);
+  setTimeout(showMainWindow, 50);
 
   mainWindow.on("resize", applyBrowserBounds);
   mainWindow.on("maximize", applyBrowserBounds);
@@ -1618,9 +2239,14 @@ function initExcelorRuntimes() {
         }
 
         const enabledSkills = getEnabledSkillNames();
+        const enabledPlugins = pluginManager.getEnabledPluginNames();
         const skillsEnv = {
           EXCELOR_SKILLS_MODE: "enabled-only",
           EXCELOR_ENABLED_SKILLS: JSON.stringify(enabledSkills),
+        };
+        const pluginsEnv = {
+          EXCELOR_ENABLED_PLUGINS: JSON.stringify(enabledPlugins),
+          EXCELOR_PLUGIN_PATHS: JSON.stringify(pluginManager.getExternalPaths()),
         };
 
         return {
@@ -1629,17 +2255,30 @@ function initExcelorRuntimes() {
             ...(executionConfig.env || {}),
             ...getBrowserBridgeEnv(),
             ...skillsEnv,
+            ...pluginsEnv,
+            EXCELOR_ROOT_DIR: runtimePaths.rootDir,
             EXCELOR_RUNTIME_SCOPE: scope,
+            EXCELOR_RUNTIME_CONFIG_PATH: runtimeConfigStore.STORE_FILE,
             EXCELOR_WORKSPACE_DIR: WORKSPACE_DIR,
           },
         };
       },
       invokeOnlyOfficeTool: (request) => invokeOnlyOfficeTool({ ...request, scope }),
       onOpenGeneratedPptx: (filePath) => openGeneratedPptxInOnlyOffice(filePath),
+      onMcpAppToolResult: (payload) => handleRuntimeMcpAppToolResult(scope, payload),
     });
 
     runtime.on("snapshot", (snapshot) => {
       emitExcelorSnapshot(scope, snapshot);
+    });
+    runtime.on("skills-changed", () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      try {
+        skillsManager.getCatalog();
+      } catch (_error) {
+        // ignore catalog refresh errors
+      }
+      mainWindow.webContents.send("skills-changed");
     });
     excelorRuntimes[scope] = runtime;
   }
@@ -1756,45 +2395,26 @@ function setupIPC() {
     return { success: true };
   });
 
-  // PDF viewer: read file from disk (returns base64)
-  ipcMain.handle("pdf:readFile", async (_event, filePath) => {
-    const pathString = typeof filePath === "string" ? filePath : (filePath?.path && typeof filePath.path === "string" ? filePath.path : "");
-    if (!pathString || !fs.existsSync(pathString)) {
-      throw new Error("PDF file not found");
+  // Open any local PDF in ONLYOFFICE (stages file into Document Server storage)
+  ipcMain.handle("open-pdf-in-onlyoffice", async (_event, filePath) => {
+    try {
+      const pathString = typeof filePath === "string" ? filePath : (filePath?.path && typeof filePath.path === "string" ? filePath.path : "");
+      const targetPath = path.resolve(String(pathString || ""));
+      if (!targetPath || !fs.existsSync(targetPath)) {
+        return { success: false, error: "PDF file not found." };
+      }
+      const stat = await fs.promises.stat(targetPath);
+      if (!stat.isFile()) {
+        return { success: false, error: "Path is not a file." };
+      }
+      if (path.extname(targetPath).toLowerCase() !== ".pdf") {
+        return { success: false, error: "File is not a PDF." };
+      }
+      const opened = await openWorkspaceFileInEditor(targetPath);
+      return { success: true, editorUrl: opened.editorUrl, fileName: opened.fileName };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-    const data = fs.readFileSync(pathString);
-    return data.toString("base64");
-  });
-
-  // PDF viewer: get highlights for a document
-  ipcMain.handle("pdf:getDocumentHighlights", async (_event, filePath) => {
-    const key = sanitizePdfStorePath(filePath);
-    if (!key) return [];
-    const docData = pdfStore.get(`documentSpecificData.${key}`, { highlights: [] });
-    return docData.highlights || [];
-  });
-
-  // PDF viewer: save highlights for a document
-  ipcMain.handle("pdf:saveDocumentHighlights", async (_event, filePath, highlights) => {
-    const key = sanitizePdfStorePath(filePath);
-    if (!key || !Array.isArray(highlights)) return false;
-    pdfStore.set(`documentSpecificData.${key}.highlights`, highlights);
-    return true;
-  });
-
-  // PDF viewer: get/save last viewed page
-  ipcMain.handle("pdf:getLastViewedPage", async (_event, filePath) => {
-    const key = sanitizePdfStorePath(filePath);
-    if (!key) return 1;
-    const docData = pdfStore.get(`documentSpecificData.${key}`, {});
-    return docData.lastViewedPage ?? 1;
-  });
-
-  ipcMain.handle("pdf:saveLastViewedPage", async (_event, filePath, pageNumber) => {
-    const key = sanitizePdfStorePath(filePath);
-    if (!key) return false;
-    pdfStore.set(`documentSpecificData.${key}.lastViewedPage`, pageNumber);
-    return true;
   });
 
   // PDF text extraction for attachments / agent (by path)
@@ -1889,6 +2509,20 @@ function setupIPC() {
     return { ...snapshot, scope };
   });
 
+  ipcMain.handle("excelor-abort-turn", async (_event, scopeOrPayload) => {
+    const scope = normalizeExcelorScope(
+      typeof scopeOrPayload === "string"
+        ? scopeOrPayload
+        : scopeOrPayload?.scope,
+    );
+    const runtime = getExcelorRuntime(scope);
+    if (!runtime) {
+      throw new Error(`Excelor runtime for scope '${scope}' is unavailable.`);
+    }
+    const snapshot = await runtime.abortTurn("Excelor timed out after 120 seconds of inactivity.");
+    return { ...snapshot, scope };
+  });
+
   ipcMain.handle("excelor-list-subagents", (_event, scopeOrPayload) => {
     const scope = normalizeExcelorScope(
       typeof scopeOrPayload === "string"
@@ -1918,6 +2552,8 @@ function setupIPC() {
         documentContext: nextContext?.documentContext || currentContext.documentContext,
         editorLoaded: Boolean(nextContext?.editorLoaded),
         editorUrl: typeof nextContext?.editorUrl === "string" ? nextContext.editorUrl : currentContext.editorUrl,
+        activeFileName: typeof nextContext?.activeFileName === "string" ? nextContext.activeFileName : currentContext.activeFileName,
+        activeWorkspacePath: typeof nextContext?.activeWorkspacePath === "string" ? nextContext.activeWorkspacePath : currentContext.activeWorkspacePath,
       },
     };
 
@@ -1933,6 +2569,116 @@ function setupIPC() {
     const snapshot = runtime.getSnapshot();
     emitExcelorSnapshot(scope, snapshot);
     return { ...snapshot.context, scope };
+  });
+
+  ipcMain.handle("get-active-mcp-app", () => {
+    return activeMcpAppState;
+  });
+
+  ipcMain.handle("mcp-app-open-session", async (_event, connectorId) => {
+    const connector = findMcpConnector(connectorId);
+    if (!connector || connector.isEnabled === false) {
+      throw new Error("MCP connector not found or disabled.");
+    }
+    return await mcpAppSessionManager.openSession(connector);
+  });
+
+  ipcMain.handle("mcp-app-list-resources", async (_event, sessionId, cursor) => {
+    return await mcpAppSessionManager.listResources(sessionId, cursor);
+  });
+
+  ipcMain.handle("mcp-app-list-resource-templates", async (_event, sessionId, cursor) => {
+    return await mcpAppSessionManager.listResourceTemplates(sessionId, cursor);
+  });
+
+  ipcMain.handle("mcp-app-read-resource", async (_event, sessionId, uri) => {
+    // #region agent log
+    const norm = String(sessionId || "").trim();
+    const pre = mcpAppSessionManager.getSession(norm);
+    const known = mcpAppSessionManager.debugListSessionIds();
+    fetch("http://127.0.0.1:7547/ingest/445f944e-452a-47ad-a4e0-f4df5fd886e1", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "182468" }, body: JSON.stringify({ sessionId: "182468", location: "main.js:mcp-app-read-resource", message: "readResource ipc entry", data: { hypothesisId: "H1", requestedSessionId: norm, rawLen: String(sessionId || "").length, hasGetSession: !!pre, knownSessionIds: known, activeMcpSessionId: normalizeText(activeMcpAppState?.sessionId), uriLen: String(uri || "").length }, timestamp: Date.now() }) }).catch(() => {});
+    // #endregion
+    return await mcpAppSessionManager.readResource(sessionId, uri);
+  });
+
+  ipcMain.handle("mcp-app-call-tool", async (_event, sessionId, toolName, args) => {
+    return await mcpAppSessionManager.callTool(sessionId, toolName, args);
+  });
+
+  ipcMain.handle("mcp-app-proxy-ui-message", async (_event, sessionId, params) => {
+    return await mcpAppSessionManager.sendUiMessage(sessionId, params);
+  });
+
+  ipcMain.handle("mcp-app-handle-message", async (_event, payload) => {
+    const scope = normalizeExcelorScope(payload?.scope || activeMcpAppState?.scope || "main");
+    const runtime = getExcelorRuntime(scope);
+    if (!runtime) {
+      return { isError: true, message: `Excelor runtime for scope '${scope}' is unavailable.` };
+    }
+
+    const text = extractMcpAppMessageText(payload?.content);
+    if (!text) {
+      return { isError: true, message: "The MCP app message did not contain any text content." };
+    }
+
+    try {
+      await runtime.runTurn(text);
+      return {};
+    } catch (error) {
+      return {
+        isError: true,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  ipcMain.handle("mcp-app-update-model-context", async (_event, payload) => {
+    const sessionId = normalizeText(payload?.sessionId || activeMcpAppState?.sessionId);
+    if (!activeMcpAppState || !sessionId || normalizeText(activeMcpAppState.sessionId) !== sessionId) {
+      return { success: false };
+    }
+
+    setActiveMcpAppState({
+      ...activeMcpAppState,
+      modelContext: {
+        content: Array.isArray(payload?.content) ? payload.content : [],
+        structuredContent: isPlainObject(payload?.structuredContent)
+          ? payload.structuredContent
+          : undefined,
+      },
+      updatedAt: new Date().toISOString(),
+    });
+
+    return { success: true };
+  });
+
+  ipcMain.handle("mcp-app-mark-ready", async (_event, payload) => {
+    const sessionId = normalizeText(
+      typeof payload === "string"
+        ? payload
+        : payload?.sessionId || activeMcpAppState?.sessionId,
+    );
+    if (!sessionId) {
+      return { success: false };
+    }
+    markMcpAppSessionReady(sessionId);
+    return { success: true };
+  });
+
+  ipcMain.handle("mcp-app-close", async (_event, payload) => {
+    const sessionId = normalizeText(
+      typeof payload === "string"
+        ? payload
+        : payload?.sessionId || activeMcpAppState?.sessionId,
+    );
+    if (!sessionId) {
+      clearActiveMcpAppState();
+      return { success: true };
+    }
+
+    await mcpAppSessionManager.closeSession(sessionId);
+    clearActiveMcpAppState(sessionId);
+    return { success: true };
   });
 
   ipcMain.on("minimize-window", () => {
@@ -2031,9 +2777,6 @@ function setupIPC() {
       }
 
       const ext = path.extname(targetPath).toLowerCase();
-      if (ext === ".pdf") {
-        return { success: true, mode: "pdf", path: targetPath };
-      }
       if (ONLYOFFICE_WORKSPACE_EXTS.has(ext)) {
         const opened = await openWorkspaceFileInEditor(targetPath);
         return { success: true, mode: "editor", url: opened.editorUrl };
@@ -2058,7 +2801,68 @@ function setupIPC() {
   });
 
   ipcMain.handle("resync-skills", async () => {
+    await refreshExcelorPluginRuntimes();
     return await skillsManager.getAll();
+  });
+
+  ipcMain.handle("approve-skill-proposal", async (_event, rawPayload, rawScope) => {
+    try {
+      const scope = normalizeExcelorScope(rawScope);
+      const payload = normalizeApprovedSkillProposalPayload(rawPayload);
+      const result = await approveSkillProposalViaServer(payload, scope);
+      if (result?.ok === true) {
+        const runtime = getExcelorRuntime(scope);
+        if (runtime && typeof runtime.resolveSkillProposal === "function") {
+          runtime.resolveSkillProposal(payload.proposalId, {
+            resolution: "accepted",
+            name: payload.name,
+            detail: String(result.message || payload.description || ""),
+            emitSkillsChanged: result.skillsChanged === true,
+          });
+        } else if (result.skillsChanged === true && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("skills-changed");
+        }
+      }
+      return result;
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        skillsChanged: false,
+      };
+    }
+  });
+
+  ipcMain.handle("get-skill-tree", (_event, skillId) => {
+    return skillsManager.getSkillTree(String(skillId || ""));
+  });
+
+  ipcMain.handle("read-skill-file", (_event, filePath) => {
+    return skillsManager.readSkillFile(String(filePath || ""));
+  });
+
+  ipcMain.handle("get-plugins", async () => {
+    return pluginManager.getCatalog();
+  });
+
+  ipcMain.handle("set-plugin-enabled", async (_event, pluginName, enabled) => {
+    const catalog = pluginManager.setPluginEnabled(String(pluginName || ""), enabled);
+    await refreshExcelorPluginRuntimes();
+    return catalog;
+  });
+
+  ipcMain.handle("resync-plugins", async () => {
+    const catalog = pluginManager.getCatalog();
+    await refreshExcelorPluginRuntimes();
+    return catalog;
+  });
+
+  ipcMain.handle("get-plugin-tree", (_event, pluginId) => {
+    return pluginManager.getPluginTree(String(pluginId || ""));
+  });
+
+  ipcMain.handle("read-plugin-file", (_event, filePath) => {
+    return pluginManager.readPluginFile(String(filePath || ""));
   });
 
   ipcMain.handle("open-skill-in-editor", async (_event, filePath) => {
@@ -2070,6 +2874,19 @@ function setupIPC() {
   });
 
   ipcMain.handle("show-skill-in-folder", async (_event, filePath) => {
+    shell.showItemInFolder(filePath);
+    return { success: true };
+  });
+
+  ipcMain.handle("open-plugin-in-editor", async (_event, filePath) => {
+    const result = await shell.openPath(filePath);
+    if (result) {
+      throw new Error(result);
+    }
+    return { success: true };
+  });
+
+  ipcMain.handle("show-plugin-in-folder", async (_event, filePath) => {
     shell.showItemInFolder(filePath);
     return { success: true };
   });
@@ -2097,6 +2914,34 @@ function setupIPC() {
 
   ipcMain.handle("disconnect-mcp-connector", (_event, connectorId) => {
     return runtimeConfigStore.disconnectMcpConnector(connectorId);
+  });
+
+  ipcMain.handle("get-financial-settings", () => {
+    return runtimeConfigStore.getFinancialSettings();
+  });
+
+  ipcMain.handle("update-financial-settings", (_event, patch) => {
+    return runtimeConfigStore.updateFinancialSettings(patch || {});
+  });
+
+  ipcMain.handle("get-financial-mcp-providers", () => {
+    return runtimeConfigStore.getFinancialMcpProviders();
+  });
+
+  ipcMain.handle("connect-financial-mcp-provider", (_event, providerId, apiKey) => {
+    return runtimeConfigStore.connectFinancialMcpProvider(providerId, apiKey);
+  });
+
+  ipcMain.handle("disconnect-financial-mcp-provider", (_event, providerId) => {
+    return runtimeConfigStore.disconnectFinancialMcpProvider(providerId);
+  });
+
+  ipcMain.handle("check-financial-mcp-provider", async (_event, providerId) => {
+    return runtimeConfigStore.checkFinancialMcpProvider(providerId);
+  });
+
+  ipcMain.handle("sync-financial-mcp-providers", () => {
+    return runtimeConfigStore.syncFinancialMcpProviders();
   });
 
   ipcMain.handle("get-provider-settings", () => {
@@ -2188,7 +3033,7 @@ app.whenReady().then(async () => {
   await startBrowserBridge();
   initExcelorRuntimes();
   setupIPC();
-  createWindow();
+  await createWindow();
   for (const scope of EXCELOR_SCOPES) {
     const runtime = getExcelorRuntime(scope);
     if (runtime) {
@@ -2221,6 +3066,7 @@ app.on("before-quit", async () => {
       runtime.stop();
     }
   }
+  await mcpAppSessionManager.closeAll();
   await stopBrowserBridge();
   if (docker) await docker.stop();
 });

@@ -2,8 +2,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("events");
 const http = require("http");
+const path = require("path");
 
 const ExcelorProcess = require("../lib/excelor-process");
+const { resolveExcelorRuntimePaths } = require("../lib/excelor-runtime-paths");
+const providerStore = require("../lib/provider-store");
+const runtimeConfigStore = require("../lib/runtime-config-store");
 const {
   resolveBunCandidates,
   findBunExecutable,
@@ -13,6 +17,19 @@ const {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getAvailablePort() {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200);
+    res.end("ok");
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
 
 function createFakeChildProcess() {
@@ -140,7 +157,7 @@ test("process that never becomes healthy times out with stdout and stderr tails"
   processInstance.stop();
 });
 
-test("process exit before readiness stops further health probing", async () => {
+test("process exit before readiness emits a detailed startup error and stops further health probing", async () => {
   let probeCount = 0;
   const { child, processInstance } = createProcessHarness({
     readyTimeoutMs: 80,
@@ -154,11 +171,13 @@ test("process exit before readiness stops further health probing", async () => {
   let readyCount = 0;
   let errorCount = 0;
   let exitCount = 0;
+  let capturedError = null;
   processInstance.on("ready", () => {
     readyCount += 1;
   });
-  processInstance.on("error", () => {
+  processInstance.on("error", (error) => {
     errorCount += 1;
+    capturedError = error;
   });
   processInstance.on("exit", () => {
     exitCount += 1;
@@ -166,14 +185,18 @@ test("process exit before readiness stops further health probing", async () => {
 
   processInstance.start();
   await wait(20);
+  child.stderr.emit("data", Buffer.from("startup import failed\n"));
   child.emit("exit", 1, null);
   const probeCountAtExit = probeCount;
   await wait(30);
 
   assert.equal(readyCount, 0);
-  assert.equal(errorCount, 0);
+  assert.equal(errorCount, 1);
   assert.equal(exitCount, 1);
   assert.equal(probeCount, probeCountAtExit);
+  assert.ok(capturedError);
+  assert.match(capturedError.message, /exited before it became ready/);
+  assert.match(capturedError.message, /startup import failed/);
 
   processInstance.stop();
 });
@@ -226,4 +249,46 @@ test("probeExcelorHealth resolves true for a 200 response", async () => {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("real bun server boots and serves /health with the desktop execution config", { timeout: 120000 }, async (t) => {
+  const runtimePaths = resolveExcelorRuntimePaths({
+    appIsPackaged: false,
+    mainDir: path.join(__dirname, ".."),
+    resourcesPath: "",
+  });
+  const executionConfig = providerStore.getExcelorExecutionConfig();
+  const port = await getAvailablePort();
+
+  const processInstance = new ExcelorProcess({
+    rootDir: runtimePaths.rootDir,
+    excelorDir: runtimePaths.excelorDir,
+    bundledBunPath: runtimePaths.bundledBunPath,
+    port,
+    extraEnv: {
+      ...(executionConfig && executionConfig.ok ? executionConfig.env : {}),
+      EXCELOR_ROOT_DIR: runtimePaths.rootDir,
+      EXCELOR_RUNTIME_SCOPE: "main",
+      EXCELOR_RUNTIME_CONFIG_PATH: runtimeConfigStore.STORE_FILE,
+      EXCELOR_WORKSPACE_DIR: runtimeConfigStore.DEFAULT_WORKSPACE_DIR,
+    },
+    stdoutWriter: () => {},
+    stderrWriter: () => {},
+  });
+
+  t.after(() => {
+    processInstance.stop();
+  });
+
+  await new Promise((resolve, reject) => {
+    processInstance.once("ready", resolve);
+    processInstance.once("error", reject);
+    processInstance.start();
+  });
+
+  const response = await fetch(`http://127.0.0.1:${port}/health`);
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
 });

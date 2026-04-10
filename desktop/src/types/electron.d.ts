@@ -30,9 +30,16 @@ interface WorkspaceFilesResult {
 
 interface OpenFileResult {
     success: boolean;
-    mode?: 'editor' | 'external' | 'pdf';
+    mode?: 'editor' | 'external';
     url?: string;
     path?: string;
+    error?: string;
+}
+
+interface OpenPdfInOnlyofficeResult {
+    success: boolean;
+    editorUrl?: string;
+    fileName?: string;
     error?: string;
 }
 
@@ -86,8 +93,134 @@ interface ExcelorContext {
     editorUrl?: string;
     editorFrameStatus?: 'idle' | 'assigned' | 'ready' | 'failed';
     editorFrameMessage?: string;
+    mcpAppContext?: McpAppDesktopContext | null;
     resetThread?: boolean;
     scope?: ExcelorScope;
+}
+
+interface McpAppDesktopContext {
+    appId: string;
+    connectorId: string;
+    connectorName: string;
+    title: string;
+    sessionId: string;
+    resourceUri: string;
+    canvasId?: string;
+    checkpointId?: string;
+    summaryText?: string;
+    shapeCount?: number;
+    updatedAt?: string;
+}
+
+interface McpAppContentBlock {
+    type: string;
+    text?: string;
+    [key: string]: unknown;
+}
+
+interface McpAppSessionInfo {
+    sessionId: string;
+    protocolVersion: string;
+    connector: {
+        id: string;
+        name: string;
+        title?: string;
+        url: string;
+        isBuiltIn?: boolean;
+        builtInAppId?: string;
+        builtInKind?: string;
+        autoOpenOnExec?: boolean;
+        resourceUri?: string;
+    };
+    serverInfo?: {
+        name?: string;
+        version?: string;
+        title?: string;
+        description?: string;
+    };
+    serverCapabilities?: Record<string, unknown>;
+    createdAt: string;
+    updatedAt: string;
+}
+
+interface McpAppState {
+    scope: ExcelorScope;
+    sessionId: string;
+    connectorId: string;
+    connectorName: string;
+    connectorTitle?: string;
+    resourceUri: string;
+    builtInAppId?: string;
+    title: string;
+    toolName: string;
+    toolArguments?: Record<string, unknown>;
+    toolResult: {
+        content: unknown[];
+        structuredContent?: unknown;
+        meta?: Record<string, unknown>;
+    };
+    modelContext?: {
+        content?: McpAppContentBlock[];
+        structuredContent?: Record<string, unknown>;
+    } | null;
+    invocationId?: string;
+    pending?: boolean;
+    dispatchToolInput?: boolean;
+    updatedAt: string;
+}
+
+type GatewayRuntimeStatus =
+    | 'idle'
+    | 'linking'
+    | 'waiting_for_qr'
+    | 'linked'
+    | 'starting'
+    | 'running'
+    | 'connected'
+    | 'stopping'
+    | 'error';
+
+interface HeartbeatSettings {
+    whatsapp: {
+        accountId: string;
+        enabled: boolean;
+        linkedPhone: string | null;
+        authDir: string;
+        allowFrom: string[];
+    };
+    heartbeat: {
+        enabled: boolean;
+        intervalMinutes: number;
+        activeHours: {
+            start: string;
+            end: string;
+            timezone: string;
+            daysOfWeek: number[];
+        };
+    };
+    checklist: string;
+}
+
+interface HeartbeatRuntimeState {
+    status: GatewayRuntimeStatus;
+    connected: boolean;
+    linking: boolean;
+    qrText: string | null;
+    linkedPhone: string | null;
+    lastError: string | null;
+}
+
+interface HeartbeatRuntimeSnapshot {
+    settings: HeartbeatSettings;
+    state: HeartbeatRuntimeState;
+}
+
+interface SoulSettings {
+    content: string;
+    hasUserOverride: boolean;
+    source: 'user' | 'bundled' | 'empty';
+    userPath: string;
+    bundledPath: string | null;
 }
 
 interface ExcelorSubagentToolRequest {
@@ -112,7 +245,20 @@ interface ExcelorSubagentDescriptor {
     lastMessage?: string;
     lastOutput?: string;
     lastError?: string;
+    taskPrompt?: string;
     terminalOutcome?: string;
+    /** Conversation this subagent belongs to; omitted on descriptors created before this field existed. */
+    conversationId?: string;
+}
+
+interface ExcelorSubagentPromptEntry {
+    id: string;
+    agentId: string;
+    prompt: string;
+    createdAt: string;
+    toolName: 'spawn_agent' | 'send_input';
+    /** Present for prompts recorded after conversation scoping; omitted on older persisted entries. */
+    conversationId?: string;
 }
 
 interface ExcelorMessage {
@@ -120,6 +266,37 @@ interface ExcelorMessage {
     role: 'user' | 'assistant';
     text: string;
     createdAt: string;
+}
+
+interface ExcelorSkillProposalEntry {
+    id: string;
+    proposalId: string;
+    action: 'create' | 'update';
+    name: string;
+    description: string;
+    body: string;
+    skillNameToUpdate?: string;
+    createdAt: string;
+    status?: 'pending' | 'accepted' | 'rejected';
+}
+
+interface SkillApprovalPayload {
+    proposalId: string;
+    action: 'create' | 'update';
+    name: string;
+    description: string;
+    body: string;
+    skillNameToUpdate?: string;
+}
+
+interface SkillApprovalResult {
+    ok: boolean;
+    error?: string;
+    message?: string;
+    path?: string;
+    skillsChanged?: boolean;
+    proposalId?: string;
+    approvedAt?: string;
 }
 
 interface ExcelorActivityEntry {
@@ -130,10 +307,13 @@ interface ExcelorActivityEntry {
     detail?: string;
     createdAt: string;
     sourceAgentId?: string;
+    subagentEventType?: string;
 }
 
 interface ExcelorSnapshot {
     scope: ExcelorScope;
+    /** Server/client conversation id; new id on each resetConversation. */
+    conversationId?: string;
     id: string;
     status: string;
     createdAt: string;
@@ -144,6 +324,8 @@ interface ExcelorSnapshot {
     activity: ExcelorActivityEntry[];
     lastError: string;
     subagents: ExcelorSubagentDescriptor[];
+    subagentPrompts: ExcelorSubagentPromptEntry[];
+    skillProposals?: ExcelorSkillProposalEntry[];
     context: ExcelorContext;
 }
 
@@ -208,17 +390,107 @@ interface DesktopSkill {
     updatedAt: string;
 }
 
+interface SkillTreeNode {
+    name: string;
+    path: string;
+    relativePath: string;
+    type: 'folder' | 'file';
+    children: SkillTreeNode[];
+}
+
+interface SkillFileContent {
+    path: string;
+    content: string;
+    updatedAt: string;
+}
+
+interface DesktopPlugin {
+    id: string;
+    name: string;
+    description: string;
+    source: 'builtin' | 'user' | 'project' | 'external';
+    desktopSource: 'official' | 'custom';
+    path: string;
+    manifestPath: string;
+    filePath: string;
+    isLegacy: boolean;
+    isEnabled: boolean;
+    scopes: string[];
+    loadError?: string;
+    updatedAt: string;
+    components: {
+        skills: string[];
+        tools: string[];
+        hooks: string[];
+        commands: string[];
+        agents: string[];
+    };
+}
+
+interface PluginTreeNode {
+    name: string;
+    path: string;
+    relativePath: string;
+    type: 'folder' | 'file';
+    children: PluginTreeNode[];
+}
+
+interface PluginFileContent {
+    path: string;
+    content: string;
+    updatedAt: string;
+}
+
 type McpConnectorStatus = 'connected' | 'disconnected' | 'error' | 'connecting';
 
 interface McpConnector {
     id: string;
     name: string;
+    title?: string;
+    description?: string;
     url: string;
     status: McpConnectorStatus;
     isEnabled: boolean;
+    isBuiltIn?: boolean;
+    builtInAppId?: string;
+    builtInKind?: string;
+    autoOpenOnExec?: boolean;
+    resourceUri?: string;
     lastConnectedAt?: string;
-    createdAt: string;
-    updatedAt: string;
+    createdAt?: string;
+    updatedAt?: string;
+}
+
+type FinancialMcpAuthType = 'api-key' | 'oauth' | 'sso';
+
+interface FinancialMcpProviderMeta {
+    id: string;
+    name: string;
+    label: string;
+    urlTemplate: string;
+    authType: FinancialMcpAuthType;
+    color: string;
+    helpUrl: string | null;
+    notes: string;
+}
+
+interface FinancialMcpProviderState {
+    providerId: string;
+    enabled: boolean;
+    apiKey?: string;
+    connectorId: string | null;
+    connectorStatus: McpConnectorStatus;
+    mcpUrl?: string;
+}
+
+interface FinancialSettingsState {
+    dataProvider: 'financialdatasets' | 'exa' | 'tavily';
+    apiKeys: {
+        financialdatasets?: string;
+        exa?: string;
+        tavily?: string;
+    };
+    mcpProviders?: Record<string, { enabled?: boolean; apiKey?: string; connectorId?: string | null }>;
 }
 
 interface ElectronAPI {
@@ -261,8 +533,37 @@ interface ElectronAPI {
     excelorRunTurn: (input: string, scope?: ExcelorScope) => Promise<ExcelorSnapshot>;
     excelorListSubagents: (scope?: ExcelorScope) => Promise<ExcelorSubagentDescriptor[]>;
     excelorLaunch: (input?: string, scope?: ExcelorScope) => Promise<ExcelorSnapshot>;
+    excelorAbortTurn: (scope?: ExcelorScope) => Promise<ExcelorSnapshot>;
+    approveSkillProposal: (payload: SkillApprovalPayload, scope?: ExcelorScope) => Promise<SkillApprovalResult>;
     onExcelorSnapshot: (callback: (snapshot: ExcelorSnapshot) => void) => () => void;
     updateExcelorContext: (scopeOrContext: ExcelorScope | ExcelorContext, context?: ExcelorContext) => Promise<ExcelorContext>;
+    getActiveMcpApp: () => Promise<McpAppState | null>;
+    onMcpAppStateChange: (callback: (state: McpAppState | null) => void) => () => void;
+    mcpAppOpenSession: (connectorId: string) => Promise<McpAppSessionInfo>;
+    mcpAppListResources: (sessionId: string, cursor?: string) => Promise<Record<string, unknown>>;
+    mcpAppListResourceTemplates: (sessionId: string, cursor?: string) => Promise<Record<string, unknown>>;
+    mcpAppReadResource: (sessionId: string, uri: string) => Promise<Record<string, unknown>>;
+    mcpAppCallTool: (sessionId: string, toolName: string, args?: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    mcpAppProxyUiMessage: (sessionId: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    mcpAppHandleMessage: (payload: { scope?: ExcelorScope; sessionId?: string; content?: McpAppContentBlock[] }) => Promise<{ isError?: boolean; message?: string }>;
+    mcpAppUpdateModelContext: (payload: { sessionId?: string; content?: McpAppContentBlock[]; structuredContent?: Record<string, unknown> }) => Promise<{ success: boolean }>;
+    mcpAppMarkReady: (payload?: { sessionId?: string } | string) => Promise<{ success: boolean }>;
+    mcpAppClose: (payload?: { sessionId?: string } | string) => Promise<{ success: boolean }>;
+
+    // Heartbeat settings
+    getHeartbeatSettings: () => Promise<HeartbeatSettings>;
+    updateHeartbeatSettings: (patch: Partial<HeartbeatSettings>) => Promise<HeartbeatSettings>;
+    startWhatsAppLink: () => Promise<void>;
+    cancelWhatsAppLink: () => Promise<void>;
+    unlinkWhatsApp: () => Promise<{ success: boolean }>;
+    startHeartbeatGateway: () => Promise<void>;
+    stopHeartbeatGateway: () => Promise<void>;
+    onHeartbeatRuntimeState: (callback: (snapshot: HeartbeatRuntimeSnapshot) => void) => () => void;
+
+    // Soul settings
+    getSoulSettings: () => Promise<SoulSettings>;
+    updateSoulSettings: (content: string) => Promise<SoulSettings>;
+    resetSoulSettings: () => Promise<SoulSettings>;
 
     // Workspace file management
     listWorkspaceFiles: () => Promise<WorkspaceFilesResult>;
@@ -299,8 +600,18 @@ interface ElectronAPI {
     getSkills: () => Promise<DesktopSkill[]>;
     setSkillEnabled: (skillId: string, enabled: boolean) => Promise<DesktopSkill[]>;
     resyncSkills: () => Promise<DesktopSkill[]>;
+    onSkillsChanged: (callback: () => void) => () => void;
+    getSkillTree: (skillId: string) => Promise<SkillTreeNode | null>;
+    readSkillFile: (filePath: string) => Promise<SkillFileContent>;
     openSkillInEditor: (filePath: string) => Promise<{ success: boolean }>;
     showSkillInFolder: (filePath: string) => Promise<{ success: boolean }>;
+    getPlugins: () => Promise<DesktopPlugin[]>;
+    setPluginEnabled: (pluginName: string, enabled: boolean) => Promise<DesktopPlugin[]>;
+    resyncPlugins: () => Promise<DesktopPlugin[]>;
+    getPluginTree: (pluginId: string) => Promise<PluginTreeNode | null>;
+    readPluginFile: (filePath: string) => Promise<PluginFileContent>;
+    openPluginInEditor: (filePath: string) => Promise<{ success: boolean }>;
+    showPluginInFolder: (filePath: string) => Promise<{ success: boolean }>;
 
     // MCP Connectors
     getMcpConnectors: () => Promise<McpConnector[]>;
@@ -310,21 +621,25 @@ interface ElectronAPI {
     checkMcpConnector: (connectorId: string) => Promise<McpConnector>;
     disconnectMcpConnector: (connectorId: string) => Promise<McpConnector | null>;
 
-    // PDF viewer
-    readPdfFile: (filePath: string | { path: string }) => Promise<string>;
-    getDocumentHighlights: (filePath: string | { path: string }) => Promise<PdfHighlight[]>;
-    saveDocumentHighlights: (filePath: string | { path: string }, highlights: PdfHighlight[]) => Promise<boolean>;
-    getLastViewedPage: (filePath: string | { path: string }) => Promise<number>;
-    saveLastViewedPage: (filePath: string | { path: string }, pageNumber: number) => Promise<boolean>;
+    // Financial settings
+    getFinancialSettings: () => Promise<FinancialSettingsState>;
+    updateFinancialSettings: (patch: Partial<FinancialSettingsState>) => Promise<FinancialSettingsState>;
+    getFinancialMcpProviders: () => Promise<{
+        catalog: FinancialMcpProviderMeta[];
+        states: Record<string, FinancialMcpProviderState>;
+    }>;
+    connectFinancialMcpProvider: (providerId: string, apiKey?: string) => Promise<FinancialMcpProviderState>;
+    disconnectFinancialMcpProvider: (providerId: string) => Promise<{ success: boolean }>;
+    checkFinancialMcpProvider: (providerId: string) => Promise<FinancialMcpProviderState>;
+    syncFinancialMcpProviders: () => Promise<{
+        catalog: FinancialMcpProviderMeta[];
+        states: Record<string, FinancialMcpProviderState>;
+    }>;
+
+    // PDF: ONLYOFFICE + text extraction for chat context / attachments
+    openPdfInOnlyoffice: (filePath: string | { path: string }) => Promise<OpenPdfInOnlyofficeResult>;
     extractPdfText: (filePath: string | { path: string }) => Promise<{ text?: string; pageCount?: number; error?: string }>;
     extractPdfTextFromBuffer: (base64: string) => Promise<{ text?: string; pageCount?: number; error?: string }>;
-}
-
-interface PdfHighlight {
-    id: string;
-    pageNumber: number;
-    text: string;
-    rectsOnPage: Array<{ top: number; left: number; width: number; height: number }>;
 }
 
 interface Window {

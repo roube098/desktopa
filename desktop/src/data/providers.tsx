@@ -46,7 +46,7 @@ export const PROVIDER_META: Record<string, ProviderMetaInfo> = {
         color: "#ff6b35", category: "classic",
     },
     zai: {
-        id: "zai", name: "Z-AI", label: "Service",
+        id: "zai", name: "Z.AI", label: "Service",
         helpUrl: null,
         color: "#00d4aa", category: "classic",
     },

@@ -3,21 +3,61 @@ const os = require("os");
 const path = require("path");
 const matter = require("gray-matter");
 const runtimeConfigStore = require("./runtime-config-store");
+const { pluginManager } = require("./plugin-manager");
 
-const SKILL_SOURCES = [
-  {
-    path: path.join(os.homedir(), ".codex", "skills"),
-    source: "official",
-  },
-  {
-    path: "c:\\Users\\roube\\Desktop\\desktop agent\\openwork\\apps\\desktop\\bundled-skills",
-    source: "official",
-  },
-  {
-    path: "c:\\Users\\roube\\Desktop\\desktop agent\\skills\\financial-services-plugins",
-    source: "custom",
-  },
-];
+const REPO_ROOT = path.resolve(__dirname, "..", "..");
+
+function getBaseSkillSources() {
+  return [
+    {
+      path: path.join(REPO_ROOT, "skills"),
+      source: "custom",
+      pluginName: "",
+      pluginEnabled: true,
+    },
+    {
+      path: path.join(REPO_ROOT, "dexter", "src", "skills"),
+      source: "official",
+      pluginName: "",
+      pluginEnabled: true,
+    },
+    {
+      path: path.join(os.homedir(), ".excelor", "skills"),
+      source: "custom",
+      pluginName: "",
+      pluginEnabled: true,
+    },
+    {
+      path: path.join(REPO_ROOT, ".excelor", "skills"),
+      source: "custom",
+      pluginName: "",
+      pluginEnabled: true,
+    },
+  ];
+}
+
+function getPluginSkillSources() {
+  return pluginManager.getCatalog()
+    .filter((plugin) => !plugin.loadError)
+    .flatMap((plugin) => [
+      ...plugin.components.skills.map((componentPath) => ({
+        path: componentPath,
+        source: plugin.desktopSource,
+        pluginName: plugin.name,
+        pluginEnabled: plugin.isEnabled,
+      })),
+      ...plugin.components.commands.map((componentPath) => ({
+        path: componentPath,
+        source: plugin.desktopSource,
+        pluginName: plugin.name,
+        pluginEnabled: plugin.isEnabled,
+      })),
+    ]);
+}
+
+function getSkillSources() {
+  return [...getBaseSkillSources(), ...getPluginSkillSources()];
+}
 
 class SkillsManager {
   getCatalog() {
@@ -26,8 +66,17 @@ class SkillsManager {
     const commands = [];
     const seen = new Set();
 
-    for (const sourceEntry of SKILL_SOURCES) {
-      this.scanTree(sourceEntry.path, sourceEntry.source, skills, commands, seen, config);
+    for (const sourceEntry of getSkillSources()) {
+      this.scanTree(
+        sourceEntry.path,
+        sourceEntry.source,
+        skills,
+        commands,
+        seen,
+        config,
+        sourceEntry.pluginEnabled,
+        sourceEntry.pluginName,
+      );
     }
 
     skills.sort((left, right) => left.name.localeCompare(right.name));
@@ -58,6 +107,41 @@ class SkillsManager {
     return this.getCommandRuntimeConfig();
   }
 
+  getSkillTree(skillId) {
+    const skills = this.getAll();
+    const skill = skills.find((entry) => entry.id === skillId);
+    if (!skill) {
+      return null;
+    }
+
+    const skillRoot = path.dirname(skill.filePath);
+    return this.buildSkillTreeNode(skillRoot, skillRoot);
+  }
+
+  readSkillFile(filePath) {
+    if (!filePath || typeof filePath !== "string") {
+      throw new Error("A file path is required.");
+    }
+
+    const targetPath = path.resolve(filePath);
+    const allowedRoots = this.getAll().map((skill) => path.dirname(skill.filePath));
+    const isAllowed = allowedRoots.some((rootPath) => this.isPathInside(rootPath, targetPath));
+    if (!isAllowed) {
+      throw new Error("File path is outside of known skill directories.");
+    }
+
+    const stat = fs.statSync(targetPath);
+    if (!stat.isFile()) {
+      throw new Error("Path is not a file.");
+    }
+
+    return {
+      path: targetPath,
+      content: fs.readFileSync(targetPath, "utf-8"),
+      updatedAt: stat.mtime.toISOString(),
+    };
+  }
+
   loadEnabledPromptBlocks() {
     const { skills, commands } = this.getCatalog();
 
@@ -84,14 +168,36 @@ class SkillsManager {
     };
   }
 
-  scanTree(rootPath, source, skills, commands, seen, config) {
+  scanTree(rootPath, source, skills, commands, seen, config, pluginEnabled = true, pluginName = "") {
     if (!fs.existsSync(rootPath)) {
+      return;
+    }
+
+    try {
+      if (fs.statSync(rootPath).isFile()) {
+        const fileName = path.basename(rootPath);
+        if (fileName === "SKILL.md") {
+          const skill = this.parseSkill(rootPath, source, config, pluginEnabled, pluginName);
+          if (skill && !seen.has(skill.id)) {
+            seen.add(skill.id);
+            skills.push(skill);
+          }
+        } else if (fileName.endsWith(".md")) {
+          const command = this.parseCommand(rootPath, source, config, pluginEnabled, pluginName);
+          if (command && !seen.has(command.id)) {
+            seen.add(command.id);
+            commands.push(command);
+          }
+        }
+        return;
+      }
+    } catch {
       return;
     }
 
     this.walk(rootPath, (entryPath, dirent) => {
       if (dirent.isFile() && dirent.name === "SKILL.md") {
-        const skill = this.parseSkill(entryPath, source, config);
+        const skill = this.parseSkill(entryPath, source, config, pluginEnabled, pluginName);
         if (skill && !seen.has(skill.id)) {
           seen.add(skill.id);
           skills.push(skill);
@@ -99,7 +205,7 @@ class SkillsManager {
       }
 
       if (dirent.isFile() && entryPath.includes(`${path.sep}commands${path.sep}`) && dirent.name.endsWith(".md")) {
-        const command = this.parseCommand(entryPath, source, config);
+        const command = this.parseCommand(entryPath, source, config, pluginEnabled, pluginName);
         if (command && !seen.has(command.id)) {
           seen.add(command.id);
           commands.push(command);
@@ -126,13 +232,50 @@ class SkillsManager {
     }
   }
 
-  parseSkill(filePath, source, config) {
+  buildSkillTreeNode(currentPath, rootPath) {
+    const stat = fs.statSync(currentPath);
+    const relativePath = path.relative(rootPath, currentPath);
+    const node = {
+      name: path.basename(currentPath),
+      path: currentPath,
+      relativePath: relativePath ? relativePath.split(path.sep).join("/") : "",
+      type: stat.isDirectory() ? "folder" : "file",
+      children: [],
+    };
+
+    if (!stat.isDirectory()) {
+      return node;
+    }
+
+    const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    const sorted = entries
+      .filter((entry) => !entry.name.startsWith("."))
+      .sort((left, right) => {
+        if (left.isDirectory() !== right.isDirectory()) {
+          return left.isDirectory() ? -1 : 1;
+        }
+        return left.name.localeCompare(right.name, undefined, { sensitivity: "base", numeric: true });
+      });
+
+    node.children = sorted.map((entry) => this.buildSkillTreeNode(path.join(currentPath, entry.name), rootPath));
+    return node;
+  }
+
+  isPathInside(parentDir, targetPath) {
+    const parent = path.resolve(parentDir);
+    const target = path.resolve(targetPath);
+    const parentWithSep = parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`;
+    return target === parent || target.startsWith(parentWithSep);
+  }
+
+  parseSkill(filePath, source, config, pluginEnabled = true, pluginName = "") {
     try {
       const file = fs.readFileSync(filePath, "utf-8");
       const { data, content } = matter(file);
       const folderName = path.basename(path.dirname(filePath));
       const name = data.name || folderName;
-      const id = `${source}-skill-${this.slugify(name)}`;
+      const pluginPrefix = pluginName ? `${this.slugify(pluginName)}-` : "";
+      const id = `${source}-skill-${pluginPrefix}${this.slugify(name)}`;
       const state = config.skills.entries[id] || {};
       const stat = fs.statSync(filePath);
 
@@ -143,7 +286,7 @@ class SkillsManager {
         alias: data.command || `/${this.slugify(name)}`,
         description: data.description || this.extractDescription(content),
         source,
-        isEnabled: state.enabled !== false,
+        isEnabled: pluginEnabled && state.enabled !== false,
         isVerified: Boolean(data.verified),
         isHidden: Boolean(data.hidden),
         filePath,
@@ -156,14 +299,15 @@ class SkillsManager {
     }
   }
 
-  parseCommand(filePath, source, config) {
+  parseCommand(filePath, source, config, pluginEnabled = true, pluginName = "") {
     try {
       const file = fs.readFileSync(filePath, "utf-8");
       const { data, content } = matter(file);
       const stem = path.basename(filePath, ".md");
       const name = data.name || stem;
       const defaultAlias = data.command || `/${this.slugify(stem)}`;
-      const id = `${source}-command-${this.slugify(path.relative(path.dirname(filePath), filePath))}-${this.slugify(name)}`;
+      const pluginPrefix = pluginName ? `${this.slugify(pluginName)}-` : "";
+      const id = `${source}-command-${pluginPrefix}${this.slugify(path.relative(path.dirname(filePath), filePath))}-${this.slugify(name)}`;
       const state = config.commands.entries[id] || {};
       const stat = fs.statSync(filePath);
       const description = data.description || this.extractDescription(content);
@@ -176,7 +320,7 @@ class SkillsManager {
         command: defaultAlias,
         description: `${description}${argumentHint}`.trim(),
         source,
-        isEnabled: state.enabled !== false,
+        isEnabled: pluginEnabled && state.enabled !== false,
         isVerified: Boolean(data.verified),
         isHidden: Boolean(data.hidden),
         filePath,
@@ -222,5 +366,5 @@ const skillsManager = new SkillsManager();
 module.exports = {
   SkillsManager,
   skillsManager,
-  SKILL_SOURCES,
+  getSkillSources,
 };

@@ -1,0 +1,13 @@
+{
+  "name": "pptx-plugin-examples",
+  "version": "1.0.0",
+  "private": true,
+  "main": "market-narrative-slide.example.js",
+  "scripts": {
+    "market-slide": "node market-narrative-slide.example.js",
+    "dark-charts": "node dark-dashboard-charts.example.js"
+  },
+  "dependencies": {
+    "pptxgenjs": "^3.12.0"
+  }
+}

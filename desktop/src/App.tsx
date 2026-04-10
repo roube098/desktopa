@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { InlineMcpAppEntry } from './types/inline-mcp-app';
 import { AssistantRuntimeProvider, CompositeAttachmentAdapter, SimpleImageAttachmentAdapter, SimpleTextAttachmentAdapter, useLocalRuntime } from '@assistant-ui/react';
 import { PdfAttachmentAdapter } from './lib/pdf-attachment-adapter';
 import { Titlebar, Dashboard, EXCELOR_AGENT_CONFIG } from './components/Dashboard';
@@ -6,15 +7,20 @@ import { Sidebar } from './components/Sidebar';
 import { LeftSidebar } from './components/LeftSidebar';
 import { MyThread } from './components/MyThread';
 import { Settings } from './components/Settings';
+import { McpAppPane } from './components/McpAppPane';
 import { ArrowLeft, ArrowRight, RotateCw, X, ExternalLink } from 'lucide-react';
-import { PDFViewer, type PDFViewerRef, type PdfHighlightLocation } from './components/PDFViewer';
-type CenterMode = 'dashboard' | 'browser' | 'editor' | 'pdf' | 'settings';
+import { streamExcelorAssistantTurn } from './lib/excelor-streaming';
+type CenterMode = 'dashboard' | 'browser' | 'editor' | 'settings' | 'mcpApp';
 type EditorFrameLoadStatus = 'idle' | 'assigned' | 'ready' | 'failed';
 
 const DEFAULT_BROWSER_URL = 'https://www.google.com';
 const MAIN_SCOPE: ExcelorScope = 'main';
-const EXCELOR_DEFAULT_TURN_TIMEOUT_MS = 120_000;
-const EXCELOR_PRESENTATION_TURN_TIMEOUT_MS = 300_000;
+
+const EMPTY_INLINE_MCP_APPS: InlineMcpAppEntry[] = [];
+
+function isTldrawAppState(appState: McpAppState | null | undefined): boolean {
+    return appState?.builtInAppId?.toLowerCase() === 'tldraw';
+}
 
 function normalizeBrowserUrl(rawUrl: string): string {
     const trimmed = rawUrl.trim();
@@ -38,7 +44,7 @@ export default function App() {
 
     const [centerMode, setCenterMode] = useState<CenterMode>('dashboard');
     const [isLeftOpen, setIsLeftOpen] = useState(true);
-    const [isRightOpen, setIsRightOpen] = useState(true);
+    const [isRightOpen, setIsRightOpen] = useState(false);
     const [isBrowserToolThreadDocked, setIsBrowserToolThreadDocked] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
 
@@ -49,25 +55,23 @@ export default function App() {
         canGoBack: false,
         canGoForward: false,
     });
+    const [activeMcpApp, setActiveMcpApp] = useState<McpAppState | null>(null);
     const [isAddressFocused, setIsAddressFocused] = useState(false);
     const [excelorSnapshot, setExcelorSnapshot] = useState<ExcelorSnapshot | null>(null);
-    const [pdfPath, setPdfPath] = useState<string | null>(null);
+    const [mainThreadKey, setMainThreadKey] = useState(0);
     const [fullPdfText, setFullPdfText] = useState('');
     const fullPdfTextRef = useRef('');
     const includeFullPdfContextRef = useRef(false);
-    const pdfViewerRef = useRef<PDFViewerRef>(null);
     useEffect(() => {
         fullPdfTextRef.current = fullPdfText;
     }, [fullPdfText]);
     const addressFocusRef = useRef(false);
     const browserHostRef = useRef<HTMLDivElement>(null);
     const browserToolActiveRef = useRef(false);
-    const documentContextRef = useRef(documentContext);
-    const editorUrlRef = useRef(editorUrl);
     const browserToolRestoreStateRef = useRef<{ centerMode: CenterMode; showSettings: boolean; isRightOpen: boolean }>({
         centerMode: 'dashboard',
         showSettings: false,
-        isRightOpen: true,
+        isRightOpen: false,
     });
 
     const clearEditorFrameHandshake = useCallback(() => {
@@ -81,14 +85,6 @@ export default function App() {
         setEditorFrameStatus(status);
         setEditorFrameMessage(message);
     }, []);
-
-    useEffect(() => {
-        documentContextRef.current = documentContext;
-    }, [documentContext]);
-
-    useEffect(() => {
-        editorUrlRef.current = editorUrl;
-    }, [editorUrl]);
 
     const handleEditorFrameLoad = useCallback(() => {
         setEditorFrameStatus((current) => {
@@ -124,207 +120,14 @@ export default function App() {
         useMemo(
             () => ({
                 async *run({ messages }) {
-                    const lastMessage = messages[messages.length - 1];
-                    let userText =
-                        lastMessage?.content
-                            .filter((c: any) => c.type === 'text')
-                            .map((c: any) => c.text)
-                            .join('') ?? '';
-
-                    const pdfParts = (lastMessage?.content?.filter((c: any) => c.type === 'data' && c.name === 'pdf') ?? []) as Array<{ data: { fileName: string; text: string } }>;
-                    for (const part of pdfParts) {
-                        const { fileName, text } = part.data ?? {};
-                        if (fileName && text != null) {
-                            userText = `Context from PDF "${fileName}":\n"""${text}"""\n\n${userText}`;
-                        }
-                    }
-
-                    if (!userText.trim()) {
-                        yield { content: [{ type: 'text', text: 'Please enter a question.' }] };
-                        return;
-                    }
-
-                    if (includeFullPdfContextRef.current && fullPdfTextRef.current) {
-                        userText = `Context from PDF:\n"""${fullPdfTextRef.current}"""\n\n${userText}`;
-                        includeFullPdfContextRef.current = false;
-                    }
-
-                    if (!window.electronAPI) {
-                        yield { content: [{ type: 'text', text: 'Electron API not available.' }] };
-                        return;
-                    }
-
-                    type StreamItem =
-                        | { type: 'delta'; text: string }
-                        | { type: 'done'; answer: string }
-                        | { type: 'error'; message: string };
-
-                    const queue: StreamItem[] = [];
-                    let notifyQueue: (() => void) | null = null;
-                    const pushQueue = (item: StreamItem) => {
-                        queue.push(item);
-                        if (notifyQueue) {
-                            const notify = notifyQueue;
-                            notifyQueue = null;
-                            notify();
-                        }
-                    };
-                    const waitForQueue = () => new Promise<void>((resolve) => {
-                        notifyQueue = resolve;
+                    yield* streamExcelorAssistantTurn({
+                        messages,
+                        requestedScope: MAIN_SCOPE,
+                        runtimeLabel: 'main runtime',
+                        emptyPromptText: 'Please enter a question.',
+                        includeFullPdfContextRef,
+                        fullPdfTextRef,
                     });
-
-                    let settled = false;
-                    let launchedTurnId: string | null = null;
-                    let sawRunningSnapshot = false;
-                    let latestSnapshot: ExcelorSnapshot | null = null;
-                    let lastDraftText = '';
-                    let emittedText = '';
-                    const requestedScope: ExcelorScope = MAIN_SCOPE;
-                    let acceptedScope: ExcelorScope = requestedScope;
-
-                    const finish = (item: StreamItem) => {
-                        if (settled) return;
-                        settled = true;
-                        clearTimeout(timeout);
-                        unsubscribe();
-                        pushQueue(item);
-                    };
-
-                    const maybeEmitDraftDelta = (snapshot: ExcelorSnapshot) => {
-                        if (!launchedTurnId) return;
-                        if (snapshot.activeTurnId !== launchedTurnId) return;
-
-                        const draft = String(snapshot.draftAssistantText || '');
-                        if (!draft) {
-                            lastDraftText = '';
-                            return;
-                        }
-
-                        if (draft === lastDraftText) return;
-
-                        let delta = '';
-                        if (draft.startsWith(lastDraftText)) {
-                            delta = draft.slice(lastDraftText.length);
-                        } else {
-                            delta = draft;
-                        }
-                        lastDraftText = draft;
-
-                        if (delta) {
-                            pushQueue({ type: 'delta', text: delta });
-                        }
-                    };
-
-                    const maybeComplete = (snapshot: ExcelorSnapshot) => {
-                        latestSnapshot = snapshot;
-                        maybeEmitDraftDelta(snapshot);
-
-                        if (launchedTurnId && snapshot.activeTurnId === launchedTurnId) {
-                            sawRunningSnapshot = true;
-                        }
-
-                        if (!launchedTurnId || !sawRunningSnapshot) {
-                            return;
-                        }
-
-                        if (snapshot.status !== 'idle' || snapshot.activeTurnId) {
-                            return;
-                        }
-
-                        if (snapshot.lastError) {
-                            finish({ type: 'error', message: snapshot.lastError });
-                            return;
-                        }
-
-                        const lastMsg = snapshot.messages[snapshot.messages.length - 1];
-                        const answer = lastMsg?.role === 'assistant' ? lastMsg.text : '';
-                        finish({ type: 'done', answer });
-                    };
-
-                    const isPresentationTurn = documentContextRef.current === 'presentation'
-                        || /\.pptx(?:$|[?#])/i.test(editorUrlRef.current || '');
-                    const turnTimeoutMs = isPresentationTurn
-                        ? EXCELOR_PRESENTATION_TURN_TIMEOUT_MS
-                        : EXCELOR_DEFAULT_TURN_TIMEOUT_MS;
-                    const timeout = setTimeout(
-                        () => finish({
-                            type: 'error',
-                            message: `Excelor timed out after ${Math.round(turnTimeoutMs / 1000)} seconds.`,
-                        }),
-                        turnTimeoutMs,
-                    );
-
-                    const unsubscribe = window.electronAPI.onExcelorSnapshot((snapshot) => {
-                        if (snapshot.scope !== acceptedScope) return;
-                        maybeComplete(snapshot);
-                    });
-
-                    void window.electronAPI.excelorLaunch(userText, requestedScope)
-                        .then((launchSnapshot) => {
-                            if (launchSnapshot.scope !== acceptedScope) {
-                                console.warn(
-                                    `[Excelor] Scope mismatch detected in main runtime. Requested '${requestedScope}', received '${launchSnapshot.scope}'. Auto-recovering to '${launchSnapshot.scope}'.`,
-                                );
-                                acceptedScope = launchSnapshot.scope;
-                            }
-                            launchedTurnId = launchSnapshot.activeTurnId;
-                            if (!launchedTurnId) {
-                                throw new Error(launchSnapshot.lastError || 'Excelor did not start a turn.');
-                            }
-
-                            if (latestSnapshot?.activeTurnId === launchedTurnId) {
-                                sawRunningSnapshot = true;
-                            }
-
-                            maybeComplete(launchSnapshot);
-                        })
-                        .catch((error: unknown) => {
-                            const message = error instanceof Error ? error.message : String(error);
-                            finish({ type: 'error', message });
-                        });
-
-                    while (true) {
-                        if (queue.length === 0) {
-                            await waitForQueue();
-                            continue;
-                        }
-
-                        const next = queue.shift();
-                        if (!next) continue;
-
-                        if (next.type === 'delta') {
-                            emittedText += next.text;
-                            yield { content: [{ type: 'text', text: emittedText }] };
-                            continue;
-                        }
-
-                        if (next.type === 'error') {
-                            if (!emittedText) {
-                                yield { content: [{ type: 'text', text: `Error: ${next.message}` }] };
-                            } else {
-                                yield { content: [{ type: 'text', text: emittedText + `\n\nError: ${next.message}` }] };
-                            }
-                            return;
-                        }
-
-                        const answer = next.answer || 'Excelor did not return a response.';
-                        if (!emittedText) {
-                            yield { content: [{ type: 'text', text: answer }] };
-                            return;
-                        }
-
-                        if (answer.startsWith(emittedText)) {
-                            const suffix = answer.slice(emittedText.length);
-                            if (suffix) {
-                                yield { content: [{ type: 'text', text: emittedText + suffix }] };
-                            } else {
-                                yield { content: [{ type: 'text', text: emittedText }] };
-                            }
-                        } else if (answer && answer !== emittedText) {
-                            yield { content: [{ type: 'text', text: emittedText + '\n\n' + answer }] };
-                        }
-                        return;
-                    }
                 },
             }),
             [],
@@ -338,7 +141,28 @@ export default function App() {
         ? 'settings'
         : centerMode === 'editor' && !editorUrl
             ? 'dashboard'
+            : centerMode === 'mcpApp' && !activeMcpApp
+                ? 'dashboard'
             : centerMode;
+    const isTldrawAppActive = Boolean(activeMcpApp && isTldrawAppState(activeMcpApp));
+
+    const handleNewChat = useCallback(async () => {
+        if (!window.electronAPI) return;
+        await window.electronAPI.updateExcelorContext(MAIN_SCOPE, {
+            documentContext,
+            editorLoaded: activeCenterMode === 'editor' && !!editorUrl,
+            editorUrl,
+            resetThread: true,
+        });
+        setMainThreadKey((k) => k + 1);
+    }, [documentContext, activeCenterMode, editorUrl]);
+
+    const rightPaneApplicable = !isTldrawAppActive && (
+        activeCenterMode === 'browser'
+        || activeCenterMode === 'editor'
+        || activeCenterMode === 'mcpApp'
+    );
+    const effectiveRightOpen = isRightOpen && rightPaneApplicable;
 
     useEffect(() => {
         addressFocusRef.current = isAddressFocused;
@@ -354,10 +178,26 @@ export default function App() {
         if (!window.electronAPI) return;
 
         let isMounted = true;
-        const unsubscribe = window.electronAPI.onExcelorSnapshot((snapshot) => {
+        const unsubscribeSnapshot = window.electronAPI.onExcelorSnapshot((snapshot) => {
             if (!isMounted) return;
             if (snapshot.scope !== MAIN_SCOPE) return;
             setExcelorSnapshot(snapshot);
+        });
+        const unsubscribeMcpApp = window.electronAPI.onMcpAppStateChange((state) => {
+            if (!isMounted) return;
+            setActiveMcpApp(state);
+            if (state) {
+                setShowSettings(false);
+                if (isTldrawAppState(state)) {
+                    setCenterMode('dashboard');
+                    setIsRightOpen(false);
+                } else {
+                    setCenterMode('mcpApp');
+                    setIsRightOpen(true);
+                }
+            } else {
+                setCenterMode((current) => current === 'mcpApp' ? 'dashboard' : current);
+            }
         });
 
         void window.electronAPI.excelorBootstrap(MAIN_SCOPE).then((snapshot) => {
@@ -365,10 +205,24 @@ export default function App() {
             if (snapshot.scope !== MAIN_SCOPE) return;
             setExcelorSnapshot(snapshot);
         }).catch(() => undefined);
+        void window.electronAPI.getActiveMcpApp().then((state) => {
+            if (!isMounted) return;
+            setActiveMcpApp(state);
+            if (state) {
+                if (isTldrawAppState(state)) {
+                    setCenterMode('dashboard');
+                    setIsRightOpen(false);
+                } else {
+                    setCenterMode('mcpApp');
+                    setIsRightOpen(true);
+                }
+            }
+        }).catch(() => undefined);
 
         return () => {
             isMounted = false;
-            unsubscribe?.();
+            unsubscribeSnapshot?.();
+            unsubscribeMcpApp?.();
         };
     }, []);
 
@@ -384,10 +238,12 @@ export default function App() {
                 setEditorUrl(url);
                 setShowSettings(false);
                 setCenterMode('editor');
+                setIsRightOpen(true);
                 if (url.includes('.xlsx')) setDocumentContext('spreadsheet');
                 else if (url.includes('.docx')) setDocumentContext('document');
                 else if (url.includes('.pptx')) setDocumentContext('presentation');
                 else if (url.includes('.pdf')) setDocumentContext('pdf');
+                if (!url.includes('.pdf')) setFullPdfText('');
             }),
             window.electronAPI.onBrowserStateChange((nextState) => {
                 setBrowserState(nextState);
@@ -440,8 +296,14 @@ export default function App() {
 
         return window.electronAPI.onExcelorCloseRequested(() => {
             setCenterMode('dashboard');
+            setIsRightOpen(false);
         });
     }, []);
+
+    useEffect(() => {
+        if (!isTldrawAppActive) return;
+        setIsRightOpen(false);
+    }, [isTldrawAppActive]);
 
     useEffect(() => {
         if (!window.electronAPI) return;
@@ -594,10 +456,21 @@ export default function App() {
             window.removeEventListener('resize', syncBounds);
             void window.electronAPI.browserHide();
         };
-    }, [activeCenterMode, isLeftOpen, isRightOpen, servicesReady]);
+    }, [activeCenterMode, isLeftOpen, effectiveRightOpen, servicesReady]);
 
-    const openEditor = (ext: string, isRecent = false, path = '') => {
+    const openEditor = (ext: string, isRecent = false, path = '', pdfSourcePath?: string) => {
         setDocumentContext(ext === 'docx' ? 'document' : ext === 'pptx' ? 'presentation' : ext === 'pdf' ? 'pdf' : 'spreadsheet');
+        if (ext === 'pdf') {
+            if (pdfSourcePath && window.electronAPI) {
+                void window.electronAPI.extractPdfText(pdfSourcePath).then((r) => {
+                    if (r.text) setFullPdfText(r.text);
+                });
+            } else {
+                setFullPdfText('');
+            }
+        } else {
+            setFullPdfText('');
+        }
         const editorOrigin = `http://localhost:${ports.onlyoffice}`;
         let url: string;
         if (path && path.startsWith('http')) {
@@ -610,18 +483,23 @@ export default function App() {
         setEditorUrl(url);
         setShowSettings(false);
         setCenterMode('editor');
+        setIsRightOpen(true);
     };
 
     const openBrowser = (nextUrl?: string) => {
         setShowSettings(false);
         setCenterMode('browser');
+        setIsRightOpen(true);
         const normalized = normalizeBrowserUrl(nextUrl || DEFAULT_BROWSER_URL);
         setAddress(normalized);
         void window.electronAPI.browserNavigate(normalized);
     };
 
     const toggleLeft = () => setIsLeftOpen(!isLeftOpen);
-    const toggleRight = () => setIsRightOpen(!isRightOpen);
+    const toggleRight = () => {
+        if (!rightPaneApplicable) return;
+        setIsRightOpen(!isRightOpen);
+    };
 
     const handleBrowserSubmit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -632,29 +510,57 @@ export default function App() {
         clearEditorFrameHandshake();
         setEditorFrameState('idle');
         setEditorUrl('');
-        setCenterMode('dashboard');
-    };
-
-    const openPdf = useCallback((filePath: string) => {
-        setShowSettings(false);
-        setPdfPath(filePath);
-        setDocumentContext('pdf');
-        setCenterMode('pdf');
-    }, []);
-
-    const closePdf = useCallback(() => {
-        setPdfPath(null);
         setFullPdfText('');
         setCenterMode('dashboard');
+        setIsRightOpen(false);
+    };
+
+    const closeMcpApp = useCallback(async () => {
+        if (!window.electronAPI) {
+            return;
+        }
+
+        try {
+            await window.electronAPI.mcpAppClose(activeMcpApp ? { sessionId: activeMcpApp.sessionId } : {});
+        } finally {
+            setActiveMcpApp(null);
+            setCenterMode('dashboard');
+            setIsRightOpen(false);
+        }
+    }, [activeMcpApp]);
+
+    const inlineMcpApps: InlineMcpAppEntry[] = useMemo(() => {
+        if (!activeMcpApp || !isTldrawAppState(activeMcpApp)) {
+            return EMPTY_INLINE_MCP_APPS;
+        }
+        const createdAtMs = Date.parse(activeMcpApp.updatedAt);
+        return [{
+            sessionId: activeMcpApp.sessionId,
+            createdAtMs: Number.isNaN(createdAtMs) ? Date.now() : createdAtMs,
+            appState: activeMcpApp,
+            onClose: () => {
+                void closeMcpApp();
+            },
+        }];
+    }, [activeMcpApp, closeMcpApp]);
+
+    const primePdfContextFromPath = useCallback((filePath: string) => {
+        if (!window.electronAPI) return;
+        void window.electronAPI.extractPdfText(filePath).then((r) => {
+            if (r.text) setFullPdfText(r.text);
+        });
     }, []);
 
-    const handlePdfExplainSelection = useCallback((text: string, _style: string, location: PdfHighlightLocation) => {
-        const prompt = `Explain this selected text from the PDF:\n\n"""${text}"""`;
-        void window.electronAPI?.excelorLaunch(prompt, MAIN_SCOPE);
-        if (pdfViewerRef.current && location?.id) {
-            setTimeout(() => pdfViewerRef.current?.scrollToHighlight(location), 600);
+    const openPdf = useCallback(async (filePath: string) => {
+        if (!window.electronAPI) return;
+        setShowSettings(false);
+        const result = await window.electronAPI.openPdfInOnlyoffice(filePath);
+        if (!result.success) {
+            console.error(result.error || 'Failed to open PDF in ONLYOFFICE.');
+            return;
         }
-    }, []);
+        primePdfContextFromPath(filePath);
+    }, [primePdfContextFromPath]);
 
     const renderBrowserPane = (extraClassName = '') => (
         <div className={`browser-pane ${extraClassName}`.trim()}>
@@ -731,36 +637,31 @@ export default function App() {
             return renderBrowserPane();
         }
 
-        if (activeCenterMode === 'pdf' && pdfPath) {
-            const pdfFileName = pdfPath.includes('/') ? pdfPath.split('/').pop() : pdfPath.includes('\\') ? pdfPath.split('\\').pop() : pdfPath;
+        if (activeCenterMode === 'mcpApp' && activeMcpApp) {
             return (
-                <div className="pdf-pane" style={{ display: 'flex', flex: 1, flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden' }}>
-                    <div className="browser-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                        <button
-                            type="button"
-                            className="browser-icon-btn"
-                            onClick={closePdf}
-                            title="Close PDF"
-                        >
-                            <X size={16} />
-                        </button>
-                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 14, color: 'rgba(255,255,255,0.9)' }}>
-                            {pdfFileName}
-                        </span>
-                    </div>
-                    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                        <PDFViewer
-                            ref={pdfViewerRef}
-                            filePath={pdfPath}
-                            onFullTextExtracted={setFullPdfText}
-                            onExplainSelection={handlePdfExplainSelection}
-                        />
-                    </div>
-                </div>
+                <McpAppPane
+                    appState={activeMcpApp}
+                    display="fullscreen"
+                    onClose={() => {
+                        void closeMcpApp();
+                    }}
+                />
             );
         }
 
-        return <Dashboard ports={ports} openEditor={openEditor} openPdf={openPdf} subagents={excelorSnapshot?.subagents ?? []} />;
+        return (
+            <Dashboard
+                ports={ports}
+                openEditor={openEditor}
+                primePdfContextFromPath={primePdfContextFromPath}
+                subagents={excelorSnapshot?.subagents ?? []}
+                subagentActivity={excelorSnapshot?.activity ?? []}
+                promptHistory={excelorSnapshot?.subagentPrompts ?? []}
+                skillProposals={excelorSnapshot?.skillProposals ?? []}
+                excelorConversationId={excelorSnapshot?.conversationId}
+                inlineMcpApps={inlineMcpApps}
+            />
+        );
     };
 
     return (
@@ -769,9 +670,11 @@ export default function App() {
                 toggleLeft={toggleLeft}
                 toggleRight={toggleRight}
                 isLeftOpen={isLeftOpen}
-                isRightOpen={isRightOpen}
+                isRightOpen={effectiveRightOpen}
+                rightToggleDisabled={!rightPaneApplicable}
                 onOpenSettings={() => setShowSettings(true)}
                 onOpenBrowser={() => openBrowser()}
+                onNewChat={servicesReady ? handleNewChat : undefined}
             />
 
             {!servicesReady ? (
@@ -798,12 +701,11 @@ export default function App() {
                     </div>
                 </div>
             ) : (
-                <AssistantRuntimeProvider runtime={excelorRuntime}>
+                <AssistantRuntimeProvider key={mainThreadKey} runtime={excelorRuntime}>
                     <div id="app">
                         <LeftSidebar
                             ports={ports}
                             openEditor={openEditor}
-                            openPdf={openPdf}
                             isOpen={isLeftOpen}
                             onOpenSettings={() => setShowSettings(true)}
                         />
@@ -849,7 +751,10 @@ export default function App() {
                                         <button
                                             type="button"
                                             className="browser-icon-btn"
-                                            onClick={() => setCenterMode('dashboard')}
+                                            onClick={() => {
+                                                setCenterMode('dashboard');
+                                                setIsRightOpen(false);
+                                            }}
                                             title="Close Browser"
                                         >
                                             <X size={16} />
@@ -867,7 +772,7 @@ export default function App() {
                             documentContext={documentContext}
                             editorUrl={editorUrl}
                             editorLoaded={activeCenterMode === 'editor' && !!editorUrl}
-                            isOpen={isRightOpen}
+                            isOpen={effectiveRightOpen}
                             forceHidden={isBrowserToolThreadDocked}
                             showPdfContextPrompt={documentContext === 'pdf' && !!fullPdfText}
                             onIncludePdfContext={() => { includeFullPdfContextRef.current = true; }}
@@ -879,28 +784,21 @@ export default function App() {
                         {isBrowserToolThreadDocked && (
                             <aside
                                 id="right-sidebar-docked-excelor"
-                                className={`right-sidebar chat-sidebar ${!isRightOpen ? 'hidden' : ''}`}
+                                className={`right-sidebar chat-sidebar ${!effectiveRightOpen ? 'hidden' : ''}`}
                                 style={{ display: 'flex', flexDirection: 'column' }}
                             >
                                 <div className="chat-history">
-                                    <MyThread agentConfig={EXCELOR_AGENT_CONFIG} editorLoaded={activeCenterMode === 'editor' && !!editorUrl} openPdf={openPdf} />
+                                    <MyThread
+                                        agentConfig={EXCELOR_AGENT_CONFIG}
+                                        editorLoaded={activeCenterMode === 'editor' && !!editorUrl}
+                                        openPdf={openPdf}
+                                        subagents={excelorSnapshot?.subagents ?? []}
+                                        activity={excelorSnapshot?.activity ?? []}
+                                        promptHistory={excelorSnapshot?.subagentPrompts ?? []}
+                                        skillProposals={excelorSnapshot?.skillProposals ?? []}
+                                        excelorConversationId={excelorSnapshot?.conversationId}
+                                    />
                                 </div>
-                                {(excelorSnapshot?.subagents?.length ?? 0) > 0 && (
-                                    <div className="excelor-subagent-inline">
-                                        {(excelorSnapshot?.subagents ?? []).map((subagent) => (
-                                            <div key={subagent.id} className="excelor-subagent-inline-card">
-                                                <div className="excelor-subagent-inline-head">
-                                                    <strong>{subagent.nickname}</strong>
-                                                    <span className={`excelor-subagent-pill status-${subagent.status}`}>{subagent.status}</span>
-                                                </div>
-                                                <p>{subagent.roleName} - depth {subagent.depth}</p>
-                                                {subagent.lastError && <p className="error">{subagent.lastError}</p>}
-                                                {!subagent.lastError && subagent.lastOutput && <p>{subagent.lastOutput}</p>}
-                                                {!subagent.lastError && !subagent.lastOutput && subagent.lastMessage && <p>{subagent.lastMessage}</p>}
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
                             </aside>
                         )}
                     </div>

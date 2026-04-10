@@ -3,13 +3,12 @@ import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 
 interface LeftSidebarProps {
     ports: Ports;
-    openEditor: (ext: string, isRecent?: boolean, path?: string) => void;
-    openPdf?: (filePath: string) => void;
+    openEditor: (ext: string, isRecent?: boolean, path?: string, pdfSourcePath?: string) => void;
     isOpen: boolean;
     onOpenSettings: () => void;
 }
 
-export function LeftSidebar({ ports, openEditor, openPdf, isOpen, onOpenSettings }: LeftSidebarProps) {
+export function LeftSidebar({ ports, openEditor, isOpen, onOpenSettings }: LeftSidebarProps) {
     const [openingFile, setOpeningFile] = useState<string | null>(null); // track which file is being opened
     const { files: workspaceFiles, loading, error, refresh } = useWorkspaceFiles();
 
@@ -45,15 +44,12 @@ export function LeftSidebar({ ports, openEditor, openPdf, isOpen, onOpenSettings
                 if (result.mode === 'external') {
                     return;
                 }
-                if (result.mode === 'pdf' && result.path && openPdf) {
-                    openPdf(result.path);
-                    return;
-                }
                 // Determine editor type from extension
                 const extMap: Record<string, string> = { xlsx: 'xlsx', xls: 'xlsx', docx: 'docx', doc: 'docx', pptx: 'pptx', ppt: 'pptx', pdf: 'pdf', csv: 'xlsx', md: 'docx', txt: 'docx' };
                 const editorExt = extMap[file.ext] || 'xlsx';
                 if (result.url) {
-                    openEditor(editorExt, true, result.url);
+                    const pdfSourcePath = file.ext === 'pdf' ? file.path : undefined;
+                    openEditor(editorExt, true, result.url, pdfSourcePath);
                 }
             } else {
                 console.error('Failed to open file:', result.error);

@@ -14,6 +14,8 @@ const http = require("http");
 const STORE_DIR = path.join(os.homedir(), ".excelor");
 const STORE_FILE = path.join(STORE_DIR, "provider-settings.json");
 const CUSTOM_MODELS_FILE = path.join(STORE_DIR, "custom-models.json");
+const ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
+const ZAI_MODELS_URL = `${ZAI_CODING_BASE_URL}/models`;
 
 // ---------------------------------------------------------------------------
 // Provider metadata (shared with frontend via IPC)
@@ -63,11 +65,11 @@ const PROVIDER_META = {
         defaultModelId: "moonshot-v1-128k",
     },
     zai: {
-        id: "zai", name: "Z-AI", category: "classic",
+        id: "zai", name: "Z.AI", category: "classic",
         label: "Service", helpUrl: null,
-        baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+        baseUrl: ZAI_CODING_BASE_URL,
         modelsEndpoint: null,
-        defaultModelId: "glm-4-flashx",
+        defaultModelId: "glm-5.1",
     },
     minimax: {
         id: "minimax", name: "MiniMax", category: "classic",
@@ -163,10 +165,10 @@ const STATIC_MODELS = {
         { id: "moonshot-v1-128k", name: "Moonshot v1 128K" },
     ],
     zai: [
-        { id: "glm-4-flashx", name: "GLM-4 FlashX" },
-        { id: "glm-4-flash", name: "GLM-4 Flash" },
-        { id: "glm-4-plus", name: "GLM-4 Plus" },
-        { id: "glm-4-long", name: "GLM-4 Long" },
+        { id: "glm-5.1", name: "GLM-5.1" },
+        { id: "glm-5", name: "GLM-5" },
+        { id: "glm-4.7", name: "GLM-4.7" },
+        { id: "glm-4.7-flash", name: "GLM-4.7 Flash" },
     ],
     minimax: [
         { id: "MiniMax-M2", name: "MiniMax M2" },
@@ -200,6 +202,7 @@ const EXCELOR_SUPPORTED_PROVIDERS = new Set([
     "xai",
     "deepseek",
     "moonshot",
+    "zai",
     "openrouter",
     "ollama",
 ]);
@@ -231,6 +234,7 @@ function getExcelorEnvName(providerId) {
         xai: "XAI_API_KEY",
         deepseek: "DEEPSEEK_API_KEY",
         moonshot: "MOONSHOT_API_KEY",
+        zai: "ZAI_API_KEY",
         openrouter: "OPENROUTER_API_KEY",
     };
 
@@ -246,6 +250,10 @@ function normalizeExcelorModelId(providerId, modelId) {
 
     if (providerId === "ollama") {
         return modelId.startsWith("ollama:") ? modelId : `ollama:${modelId}`;
+    }
+
+    if (providerId === "zai") {
+        return modelId.startsWith("zai:") ? modelId : `zai:${modelId}`;
     }
 
     return modelId;
@@ -372,9 +380,10 @@ _loadPersistedKeys();
 function getProviderSettings() {
     const store = readStore();
     const connectedProviders = {};
+    const providersWithMergedModels = new Set(["openai", "openrouter", "zai"]);
 
     for (const [providerId, provider] of Object.entries(store.connectedProviders || {})) {
-        const normalizedAvailableModels = (providerId === "openai" || providerId === "openrouter")
+        const normalizedAvailableModels = providersWithMergedModels.has(providerId)
             ? getMergedModels(providerId)
             : provider.availableModels;
 
@@ -506,7 +515,7 @@ async function validateApiKey(providerId, apiKey) {
         }
 
         if (providerId === "zai") {
-            result = await httpRequest("https://open.bigmodel.cn/api/paas/v4/models", {
+            result = await httpRequest(ZAI_MODELS_URL, {
                 method: "GET",
                 headers: { Authorization: `Bearer ${apiKey}` },
             });
@@ -678,13 +687,13 @@ function getExcelorExecutionConfig() {
             if (provider.credentials?.oauthProvider === "chatgpt") {
                 return {
                     ok: false,
-                    error: "Excelor requires an OpenAI API key. ChatGPT sign-in is not supported for Excelor runs.",
+                    error: `Excelor requires ${envName}. ChatGPT sign-in is not supported for Excelor runs.`,
                 };
             }
 
             return {
                 ok: false,
-                error: `Excelor requires a stored API key for ${meta?.name || activeProviderId}. Reconnect the provider in Settings and try again.`,
+                error: `Excelor requires ${envName} for ${meta?.name || activeProviderId}. Reconnect the provider in Settings and try again.`,
             };
         }
 
@@ -694,6 +703,10 @@ function getExcelorExecutionConfig() {
     if (activeProviderId === "ollama") {
         const serverUrl = provider.credentials?.serverUrl || provider.baseUrl || "http://localhost:11434";
         env.OLLAMA_BASE_URL = serverUrl;
+    }
+
+    if (activeProviderId === "zai") {
+        env.ZAI_BASE_URL = provider.baseUrl || meta?.baseUrl || ZAI_CODING_BASE_URL;
     }
 
     return {
