@@ -1529,6 +1529,14 @@ input[type="text"]:focus {
   overflow-wrap: break-word;
 }
 
+.aui-message-interrupted {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 /* Markdown inside assistant messages */
 .aui-message-assistant h1,
 .aui-message-assistant h2,
@@ -1597,8 +1605,12 @@ input[type="text"]:focus {
 /* Skills detail markdown viewer */
 .skills-markdown {
   color: var(--text-secondary);
-  font-size: 14px;
-  line-height: 1.65;
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.skills-markdown > :first-child {
+  margin-top: 0;
 }
 
 .skills-markdown h1,
@@ -1606,24 +1618,56 @@ input[type="text"]:focus {
 .skills-markdown h3,
 .skills-markdown h4 {
   color: var(--text-primary);
-  font-weight: 700;
-  margin-top: 20px;
-  margin-bottom: 8px;
-  line-height: 1.3;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 22px 0 8px;
 }
 
 .skills-markdown h1 {
-  font-size: 28px;
-  letter-spacing: -0.01em;
+  font-size: 20px;
+  letter-spacing: -0.005em;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
 }
 
 .skills-markdown h2 {
-  font-size: 22px;
+  font-size: 16px;
   letter-spacing: -0.005em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
 }
 
 .skills-markdown h3 {
-  font-size: 18px;
+  font-size: 14px;
+}
+
+.skills-markdown h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.skills-markdown :is(h1, h2, h3, h4) + p {
+  margin-top: 2px;
+}
+
+.skills-markdown strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.skills-markdown em {
+  color: var(--text-primary);
+}
+
+.skills-markdown blockquote {
+  margin: 10px 0 14px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-tertiary);
+  border-radius: 0 8px 8px 0;
+  color: var(--text-secondary);
 }
 
 .skills-markdown p {
@@ -1635,8 +1679,45 @@ input[type="text"]:focus {
   margin: 0 0 12px 20px;
 }
 
+.skills-markdown ul {
+  list-style: disc;
+}
+
+.skills-markdown ol {
+  list-style: decimal;
+}
+
 .skills-markdown li {
   margin: 4px 0;
+}
+
+.skills-markdown li::marker {
+  color: var(--text-muted);
+}
+
+.skills-markdown li > p {
+  margin: 0;
+}
+
+.skills-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0 14px;
+  font-size: 12.5px;
+}
+
+.skills-markdown th,
+.skills-markdown td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.skills-markdown th {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 .skills-markdown code {
@@ -1669,6 +1750,18 @@ input[type="text"]:focus {
   color: var(--accent-light);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.skills-markdown a:focus-visible {
+  outline: 2px solid var(--accent-light);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.skills-markdown input[type="checkbox"] {
+  accent-color: var(--accent-light);
+  margin-right: 6px;
+  transform: translateY(1px);
 }
 
 .skills-markdown hr {
@@ -1805,6 +1898,89 @@ input[type="text"]:focus {
   flex-wrap: nowrap;
   flex: 1;
   overflow: hidden;
+}
+
+.aui-plan-mode-toggle-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 240px;
+}
+
+.aui-plan-mode-toggle-error {
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--text-danger, #ef4444);
+}
+
+.aui-plan-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.aui-plan-mode-toggle-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.aui-plan-mode-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.aui-plan-mode-toggle-track {
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  position: relative;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  vertical-align: middle;
+}
+
+.aui-plan-mode-toggle-track::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.aui-plan-mode-toggle input:checked + .aui-plan-mode-toggle-track {
+  background: rgba(99, 102, 241, 0.28);
+  border-color: rgba(99, 102, 241, 0.45);
+}
+
+.aui-plan-mode-toggle input:checked + .aui-plan-mode-toggle-track::after {
+  transform: translateX(16px);
+  background: #6366f1;
+}
+
+.aui-plan-mode-toggle input:disabled + .aui-plan-mode-toggle-track {
+  opacity: 0.5;
+  filter: grayscale(1);
+  cursor: not-allowed;
+}
+
+.aui-plan-mode-toggle:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.5;
+  filter: grayscale(1);
 }
 
 .aui-composer-attach {
@@ -1951,6 +2127,18 @@ input[type="text"]:focus {
   background: var(--text-primary);
   color: var(--bg-primary);
   border-color: var(--text-primary);
+}
+
+.aui-composer-stop {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.28);
+}
+
+.aui-composer-stop:hover:not(:disabled) {
+  background: #ef4444;
+  color: #ffffff;
+  border-color: #ef4444;
 }
 
 .aui-composer-send:active:not(:disabled) {

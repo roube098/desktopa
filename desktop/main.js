@@ -7,7 +7,7 @@ for (const stream of [process.stdout, process.stderr]) {
   }
 }
 
-const { app, BrowserWindow, WebContentsView, ipcMain, shell, session } = require("electron");
+const { app, BrowserWindow, WebContentsView, ipcMain, shell, session, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -20,6 +20,7 @@ const runtimeConfigStore = require("./lib/runtime-config-store");
 const { McpAppSessionManager } = require("./lib/mcp-app-session-manager");
 const { pluginManager } = require("./lib/plugin-manager");
 const { skillsManager } = require("./lib/skills-manager");
+const { SkillsWatcher } = require("./lib/skills-watcher");
 const ExcelorRuntime = require("./lib/excelor-runtime");
 const { resolveExcelorRuntimePaths } = require("./lib/excelor-runtime-paths");
 const {
@@ -116,6 +117,7 @@ const ONLYOFFICE_WORKSPACE_EXTS = new Set([
 ]);
 
 let mainWindow = null;
+let skillsWatcher = null;
 let docker = null;
 let tray = null;
 let browserView = null;
@@ -223,6 +225,69 @@ function getBrowserBridgeEnv() {
     EXCELOR_MCP_APP_BRIDGE_URL: `http://127.0.0.1:${browserBridgePort}`,
     EXCELOR_MCP_APP_BRIDGE_TOKEN: browserBridgeToken,
   };
+}
+
+const SKILL_PROMPT_TIMEOUT_MS = 15 * 60 * 1000;
+
+function awaitSkillScriptApprovalFromRenderer(win, event) {
+  return new Promise((resolve) => {
+    const requestId = crypto.randomUUID();
+    const channel = `skill:script-approval:response:${requestId}`;
+    let settled = false;
+    const finish = (approved) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ipcMain.removeListener("skill:script-approval:response", listener);
+      resolve(approved === true);
+    };
+    const listener = (_evt, payload) => {
+      if (!payload || payload.requestId !== requestId) return;
+      finish(payload.approved === true);
+    };
+    ipcMain.on("skill:script-approval:response", listener);
+    const timer = setTimeout(() => finish(false), SKILL_PROMPT_TIMEOUT_MS);
+    try {
+      win.webContents.send("skill:script-approval:request", {
+        requestId,
+        skillName: String(event?.skillName || ""),
+        skillPath: String(event?.skillPath || ""),
+        transports: Array.isArray(event?.transports) ? event.transports.map(String) : [],
+      });
+    } catch (_e) {
+      finish(false);
+    }
+  });
+}
+
+function awaitSkillEnvSecretFromRenderer(win, event) {
+  return new Promise((resolve) => {
+    const requestId = crypto.randomUUID();
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ipcMain.removeListener("skill:env-secret:response", listener);
+      resolve(typeof value === "string" && value.length > 0 ? value : null);
+    };
+    const listener = (_evt, payload) => {
+      if (!payload || payload.requestId !== requestId) return;
+      finish(typeof payload.value === "string" ? payload.value : null);
+    };
+    ipcMain.on("skill:env-secret:response", listener);
+    const timer = setTimeout(() => finish(null), SKILL_PROMPT_TIMEOUT_MS);
+    try {
+      win.webContents.send("skill:env-secret:request", {
+        requestId,
+        name: String(event?.name || ""),
+        description: event?.description ? String(event.description) : "",
+        skillName: String(event?.skillName || ""),
+      });
+    } catch (_e) {
+      finish(null);
+    }
+  });
 }
 
 function writeJson(res, statusCode, payload) {
@@ -1413,6 +1478,53 @@ function normalizeApprovedSkillProposalPayload(rawPayload) {
   return normalized;
 }
 
+function normalizePlanApprovalPayload(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === "object" ? rawPayload : {};
+  const proposalId = String(payload.proposalId || "").trim();
+  const planId = String(payload.planId || "").trim();
+  const title = String(payload.title || "").trim();
+  const summary = String(payload.summary || "").trim();
+  const body = String(payload.body || "").trim();
+  const revision = Number.isFinite(payload.revision) ? Number(payload.revision) : 0;
+
+  if (!proposalId || !planId || !title || !summary || !body) {
+    throw new Error("Plan approval requires proposalId, planId, title, summary, and body.");
+  }
+
+  return {
+    proposalId,
+    planId,
+    title,
+    summary,
+    body,
+    revision,
+    draftPath: String(payload.draftPath || "").trim() || undefined,
+  };
+}
+
+function normalizePlanRevisionPayload(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === "object" ? rawPayload : {};
+  const proposalId = String(payload.proposalId || "").trim();
+  const note = String(payload.note || "").trim();
+
+  if (!proposalId || !note) {
+    throw new Error("Plan revision requires proposalId and note.");
+  }
+
+  return { proposalId, note };
+}
+
+function normalizePlanRejectionPayload(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === "object" ? rawPayload : {};
+  const proposalId = String(payload.proposalId || "").trim();
+
+  if (!proposalId) {
+    throw new Error("Plan rejection requires a proposalId.");
+  }
+
+  return { proposalId };
+}
+
 async function approveSkillProposalViaServer(payload, scope = "main") {
   const normalizedScope = normalizeExcelorScope(scope);
   const port = EXCELOR_SCOPE_PORTS[normalizedScope] || EXCELOR_SCOPE_PORTS.main;
@@ -2223,6 +2335,7 @@ function initExcelorRuntimes() {
     mainDir: __dirname,
     resourcesPath: process.resourcesPath,
   });
+  const transcriptRootDir = path.join(app.getPath("home"), ".excelor", "transcripts");
 
   excelorRuntimes = {};
   for (const scope of EXCELOR_SCOPES) {
@@ -2231,6 +2344,7 @@ function initExcelorRuntimes() {
       excelorDir: runtimePaths.excelorDir,
       bundledBunPath: runtimePaths.bundledBunPath,
       port: EXCELOR_SCOPE_PORTS[scope],
+      transcriptPath: path.join(transcriptRootDir, "desktop", scope, "current-thread.json"),
       getContext: () => ({ ...getExcelorContext(scope) }),
       getExecutionConfig: () => {
         const executionConfig = providerStore.getExcelorExecutionConfig();
@@ -2260,12 +2374,27 @@ function initExcelorRuntimes() {
             EXCELOR_RUNTIME_SCOPE: scope,
             EXCELOR_RUNTIME_CONFIG_PATH: runtimeConfigStore.STORE_FILE,
             EXCELOR_WORKSPACE_DIR: WORKSPACE_DIR,
+            EXCELOR_TRANSCRIPTS_DIR: transcriptRootDir,
           },
         };
       },
       invokeOnlyOfficeTool: (request) => invokeOnlyOfficeTool({ ...request, scope }),
       onOpenGeneratedPptx: (filePath) => openGeneratedPptxInOnlyOffice(filePath),
       onMcpAppToolResult: (payload) => handleRuntimeMcpAppToolResult(scope, payload),
+      promptSkillScriptApproval: async (event) => {
+        const win = mainWindow;
+        if (!win || win.isDestroyed()) {
+          return false;
+        }
+        return awaitSkillScriptApprovalFromRenderer(win, event);
+      },
+      promptSkillEnvSecret: async (event) => {
+        const win = mainWindow;
+        if (!win || win.isDestroyed()) {
+          return null;
+        }
+        return awaitSkillEnvSecretFromRenderer(win, event);
+      },
     });
 
     runtime.on("snapshot", (snapshot) => {
@@ -2509,6 +2638,34 @@ function setupIPC() {
     return { ...snapshot, scope };
   });
 
+  ipcMain.handle("excelor-enter-plan-mode", (_event, scopeOrPayload) => {
+    const scope = normalizeExcelorScope(
+      typeof scopeOrPayload === "string"
+        ? scopeOrPayload
+        : scopeOrPayload?.scope,
+    );
+    const runtime = getExcelorRuntime(scope);
+    if (!runtime || typeof runtime.enterPlanMode !== "function") {
+      throw new Error(`Excelor runtime for scope '${scope}' is unavailable.`);
+    }
+    const snapshot = runtime.enterPlanMode();
+    return { ...snapshot, scope };
+  });
+
+  ipcMain.handle("excelor-exit-plan-mode", (_event, scopeOrPayload) => {
+    const scope = normalizeExcelorScope(
+      typeof scopeOrPayload === "string"
+        ? scopeOrPayload
+        : scopeOrPayload?.scope,
+    );
+    const runtime = getExcelorRuntime(scope);
+    if (!runtime || typeof runtime.exitPlanMode !== "function") {
+      throw new Error(`Excelor runtime for scope '${scope}' is unavailable.`);
+    }
+    const snapshot = runtime.exitPlanMode();
+    return { ...snapshot, scope };
+  });
+
   ipcMain.handle("excelor-abort-turn", async (_event, scopeOrPayload) => {
     const scope = normalizeExcelorScope(
       typeof scopeOrPayload === "string"
@@ -2519,7 +2676,10 @@ function setupIPC() {
     if (!runtime) {
       throw new Error(`Excelor runtime for scope '${scope}' is unavailable.`);
     }
-    const snapshot = await runtime.abortTurn("Excelor timed out after 120 seconds of inactivity.");
+    const reason = typeof scopeOrPayload === "object" && typeof scopeOrPayload?.reason === "string" && scopeOrPayload.reason.trim()
+      ? scopeOrPayload.reason.trim()
+      : "Excelor timed out after 120 seconds of inactivity.";
+    const snapshot = await runtime.abortTurn(reason);
     return { ...snapshot, scope };
   });
 
@@ -2796,6 +2956,10 @@ function setupIPC() {
     return await skillsManager.getAll();
   });
 
+  ipcMain.handle("skills:list", async (_event, payload) => {
+    return skillsManager.listSkillsForIpc(payload || {});
+  });
+
   ipcMain.handle("set-skill-enabled", (_event, skillId, enabled) => {
     return skillsManager.setSkillEnabled(skillId, enabled);
   });
@@ -2829,6 +2993,57 @@ function setupIPC() {
         ok: false,
         error: err instanceof Error ? err.message : String(err),
         skillsChanged: false,
+      };
+    }
+  });
+
+  ipcMain.handle("approve-plan-proposal", async (_event, rawPayload, rawScope) => {
+    try {
+      const scope = normalizeExcelorScope(rawScope);
+      const payload = normalizePlanApprovalPayload(rawPayload);
+      const runtime = getExcelorRuntime(scope);
+      if (!runtime || typeof runtime.approvePlanProposal !== "function") {
+        throw new Error(`Excelor runtime for scope '${scope}' is unavailable.`);
+      }
+      return runtime.approvePlanProposal(payload);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  ipcMain.handle("request-plan-proposal-revision", async (_event, rawPayload, rawScope) => {
+    try {
+      const scope = normalizeExcelorScope(rawScope);
+      const payload = normalizePlanRevisionPayload(rawPayload);
+      const runtime = getExcelorRuntime(scope);
+      if (!runtime || typeof runtime.requestPlanProposalRevision !== "function") {
+        throw new Error(`Excelor runtime for scope '${scope}' is unavailable.`);
+      }
+      return runtime.requestPlanProposalRevision(payload);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  ipcMain.handle("reject-plan-proposal", async (_event, rawPayload, rawScope) => {
+    try {
+      const scope = normalizeExcelorScope(rawScope);
+      const payload = normalizePlanRejectionPayload(rawPayload);
+      const runtime = getExcelorRuntime(scope);
+      if (!runtime || typeof runtime.rejectPlanProposal !== "function") {
+        throw new Error(`Excelor runtime for scope '${scope}' is unavailable.`);
+      }
+      return runtime.rejectPlanProposal(payload);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
       };
     }
   });
@@ -3034,6 +3249,18 @@ app.whenReady().then(async () => {
   initExcelorRuntimes();
   setupIPC();
   await createWindow();
+
+  skillsWatcher = new SkillsWatcher(() => {
+    const { getSkillSources } = require("./lib/skills-manager");
+    return getSkillSources().map((s) => s.path).filter(Boolean);
+  });
+  skillsWatcher.on("update", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("skills:updateAvailable", { version: 2 });
+    }
+  });
+  skillsWatcher.start();
+
   for (const scope of EXCELOR_SCOPES) {
     const runtime = getExcelorRuntime(scope);
     if (runtime) {
@@ -3060,6 +3287,14 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", async () => {
   app.isQuitting = true;
+  if (skillsWatcher) {
+    try {
+      skillsWatcher.stop();
+    } catch {
+      /* ignore */
+    }
+    skillsWatcher = null;
+  }
   for (const scope of EXCELOR_SCOPES) {
     const runtime = getExcelorRuntime(scope);
     if (runtime && typeof runtime.stop === "function") {

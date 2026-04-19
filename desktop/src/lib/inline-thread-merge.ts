@@ -25,6 +25,13 @@ export type MergedInlineThreadItem =
         order: number;
     }
     | {
+        kind: 'plan_proposal';
+        id: string;
+        proposalId: string;
+        createdAtMs: number;
+        order: number;
+    }
+    | {
         kind: 'mcp_app';
         id: string;
         sessionId: string;
@@ -44,12 +51,14 @@ export function mergeInlineThreadItems(params: {
     threadMessages: unknown[];
     promptBlocks: { createdAtMs: number; promptEntry: { id: string } }[];
     visibleSkillProposals: { id: string; createdAt: unknown }[];
+    visiblePlanProposals?: { id: string; createdAt: unknown }[];
     inlineMcpApps?: { sessionId: string; createdAtMs: number }[];
 }): MergedInlineThreadItem[] {
     const {
         threadMessages,
         promptBlocks,
         visibleSkillProposals,
+        visiblePlanProposals = [],
         inlineMcpApps = [],
     } = params;
 
@@ -74,6 +83,13 @@ export function mergeInlineThreadItems(params: {
         createdAtMs: toTimestamp(proposal.createdAt),
         order: index,
     }));
+    const planProposalItems: MergedInlineThreadItem[] = visiblePlanProposals.map((proposal, index) => ({
+        kind: 'plan_proposal',
+        id: proposal.id,
+        proposalId: proposal.id,
+        createdAtMs: toTimestamp(proposal.createdAt),
+        order: index,
+    }));
     const mcpItems: MergedInlineThreadItem[] = inlineMcpApps.map((entry, index) => ({
         kind: 'mcp_app',
         id: `mcp-app-${entry.sessionId}`,
@@ -82,7 +98,7 @@ export function mergeInlineThreadItems(params: {
         order: index,
     }));
 
-    return [...messageItems, ...subagentItems, ...proposalItems, ...mcpItems].sort((left, right) => {
+    return [...messageItems, ...subagentItems, ...proposalItems, ...planProposalItems, ...mcpItems].sort((left, right) => {
         const timestampDelta = left.createdAtMs - right.createdAtMs;
         if (timestampDelta !== 0) return timestampDelta;
         if (left.kind !== right.kind) {

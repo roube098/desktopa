@@ -85,6 +85,8 @@ const DEFAULT_CONFIG = {
   runtime: {
     collaborationMode: "Default",
     approvalPolicy: "on-request",
+    /** When false, dexter should block skills whose SKILL.json declares shell/script transports until approved (mirrors codex skill_approval). */
+    skillScriptApproval: true,
     sandboxMode: "workspace-write",
     webSearchMode: "manual",
     personality: "codex-desktop",
@@ -653,13 +655,54 @@ function disconnectMcpConnector(connectorId) {
   return connectors.find((connector) => connector.id === connectorId) || null;
 }
 
-function setSkillEnabled(skillId, enabled) {
+function upsertDexterSettingsSkillsPath(filePath, enabled) {
+  if (!filePath || typeof filePath !== "string") {
+    return;
+  }
+
+  const settingsPath = path.join(STORE_DIR, "settings.json");
+  let data = {};
+  if (fs.existsSync(settingsPath)) {
+    try {
+      data = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    } catch {
+      data = {};
+    }
+  }
+
+  if (!data.skills || typeof data.skills !== "object" || Array.isArray(data.skills)) {
+    data.skills = { bundled: { enabled: true }, config: [] };
+  }
+  if (!Array.isArray(data.skills.config)) {
+    data.skills.config = [];
+  }
+
+  const normalized = path.resolve(filePath).replace(/\\/g, "/");
+  const idx = data.skills.config.findIndex(
+    (entry) =>
+      entry &&
+      typeof entry.path === "string" &&
+      path.resolve(entry.path).replace(/\\/g, "/") === normalized,
+  );
+  const entry = { path: normalized, enabled: Boolean(enabled) };
+  if (idx >= 0) {
+    data.skills.config[idx] = entry;
+  } else {
+    data.skills.config.push(entry);
+  }
+
+  ensureStoreDir();
+  fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2), "utf-8");
+}
+
+function setSkillEnabled(skillId, enabled, filePath) {
   const current = readRawConfig();
   current.skills.entries[skillId] = {
     ...(current.skills.entries[skillId] || {}),
     enabled: Boolean(enabled),
   };
   writeRawConfig(current);
+  upsertDexterSettingsSkillsPath(filePath, enabled);
   return current;
 }
 
@@ -761,12 +804,23 @@ function storeDetectedPaths(paths) {
   return current;
 }
 
+/** When `false`, dexter runs in strict mode for skills with shell/script transports in SKILL.json. Default permissive (`true`). */
+function getSkillScriptApprovalPermissive() {
+  try {
+    const cfg = readRawConfig();
+    return cfg.runtime?.skillScriptApproval !== false;
+  } catch (_e) {
+    return true;
+  }
+}
+
 module.exports = {
   DEFAULT_CONFIG,
   DEFAULT_WORKSPACE_DIR,
   FINANCIAL_MCP_CATALOG,
   STORE_DIR,
   STORE_FILE,
+  getSkillScriptApprovalPermissive,
   getConfig,
   updateConfig,
   getFinancialSettings,

@@ -98,13 +98,36 @@ class SkillsManager {
   }
 
   setSkillEnabled(skillId, enabled) {
-    runtimeConfigStore.setSkillEnabled(skillId, enabled);
+    const catalog = this.getCatalog();
+    const skill = catalog.skills.find((entry) => entry.id === skillId);
+    runtimeConfigStore.setSkillEnabled(skillId, enabled, skill?.filePath);
     return this.getSkillRuntimeConfig();
   }
 
   setCommandState(commandId, patch) {
     runtimeConfigStore.setCommandState(commandId, patch);
     return this.getCommandRuntimeConfig();
+  }
+
+  listSkillsForIpc(payload = {}) {
+    const cwds = Array.isArray(payload.cwds) ? payload.cwds : [];
+    const cwd0 = cwds.length > 0 ? path.resolve(String(cwds[0])) : process.cwd();
+    const { skills } = this.getCatalog();
+    return {
+      version: 2,
+      entries: [
+        {
+          cwd: cwd0,
+          skills: skills.map((s) => ({
+            name: s.name,
+            description: s.description,
+            path: s.filePath,
+            enabled: s.isEnabled !== false,
+          })),
+          errors: [],
+        },
+      ],
+    };
   }
 
   getSkillTree(skillId) {

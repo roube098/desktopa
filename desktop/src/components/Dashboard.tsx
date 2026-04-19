@@ -3,6 +3,7 @@ import { AuiIf } from "@assistant-ui/react";
 import { MessageSquarePlus } from 'lucide-react';
 import { MyThread } from "./MyThread";
 import type { SkillProposalEntry } from "../types/skills";
+import type { PlanModeEntry, PlanProposalEntry } from "../types/plan-mode";
 import type { AgentConfig } from "../types/agent-types";
 import type { InlineMcpAppEntry } from "../types/inline-mcp-app";
 
@@ -120,6 +121,8 @@ interface DashboardProps {
     subagentActivity?: ExcelorActivityEntry[];
     promptHistory?: ExcelorSubagentPromptEntry[];
     skillProposals?: SkillProposalEntry[];
+    planMode?: PlanModeEntry | null;
+    planProposals?: PlanProposalEntry[];
     excelorConversationId?: string;
     inlineMcpApps?: InlineMcpAppEntry[];
 }
@@ -148,6 +151,8 @@ function DashboardThreadUI({
     activity = [],
     promptHistory = [],
     skillProposals = [],
+    planMode,
+    planProposals = [],
     excelorConversationId,
     inlineMcpApps = [],
 }: {
@@ -155,6 +160,8 @@ function DashboardThreadUI({
     activity?: ExcelorActivityEntry[];
     promptHistory?: ExcelorSubagentPromptEntry[];
     skillProposals?: SkillProposalEntry[];
+    planMode?: PlanModeEntry | null;
+    planProposals?: PlanProposalEntry[];
     excelorConversationId?: string;
     inlineMcpApps?: InlineMcpAppEntry[];
 }) {
@@ -169,6 +176,9 @@ function DashboardThreadUI({
                         activity={activity}
                         promptHistory={promptHistory}
                         skillProposals={skillProposals}
+                        planProposals={planProposals}
+                        planMode={planMode}
+                        excelorPlanScope="main"
                         excelorConversationId={excelorConversationId}
                         inlineMcpApps={inlineMcpApps}
                     />
@@ -183,6 +193,9 @@ function DashboardThreadUI({
                         activity={activity}
                         promptHistory={promptHistory}
                         skillProposals={skillProposals}
+                        planProposals={planProposals}
+                        planMode={planMode}
+                        excelorPlanScope="main"
                         excelorConversationId={excelorConversationId}
                         inlineMcpApps={inlineMcpApps}
                     />
@@ -200,6 +213,8 @@ export function Dashboard({
     subagentActivity = [],
     promptHistory = [],
     skillProposals = [],
+    planMode = null,
+    planProposals = [],
     excelorConversationId,
     inlineMcpApps = [],
 }: DashboardProps) {
@@ -316,13 +331,15 @@ export function Dashboard({
                 )}
 
                 <DashboardThreadUI
-                    subagents={subagents}
-                    activity={subagentActivity}
-                    promptHistory={promptHistory}
-                    skillProposals={skillProposals}
-                    excelorConversationId={excelorConversationId}
-                    inlineMcpApps={inlineMcpApps}
-                />
+                        subagents={subagents}
+                        activity={subagentActivity}
+                        promptHistory={promptHistory}
+                        skillProposals={skillProposals}
+                        planMode={planMode}
+                        planProposals={planProposals}
+                        excelorConversationId={excelorConversationId}
+                        inlineMcpApps={inlineMcpApps}
+                    />
 
                 <AuiIf condition={(s) => s.thread.isEmpty}>
                     <div className="dashboard-recent">

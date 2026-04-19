@@ -7,7 +7,7 @@ import {
     SimpleTextAttachmentAdapter
 } from "@assistant-ui/react";
 import { PdfAttachmentAdapter } from "../lib/pdf-attachment-adapter";
-import { streamExcelorAssistantTurn } from "../lib/excelor-streaming";
+import { isExcelorAbortError, streamExcelorAssistantTurn } from "../lib/excelor-streaming";
 import { MyThread } from "./MyThread";
 import { getAgentForContext } from "../data/agents";
 import type { AgentConfig } from "../types/agent-types";
@@ -113,7 +113,7 @@ export function Sidebar({
     }), []);
 
     const runtime = useLocalRuntime({
-        async *run({ messages }) {
+        async *run({ messages, abortSignal }) {
             if (isBusy) return;
             setIsBusy(true);
 
@@ -126,9 +126,13 @@ export function Sidebar({
                     emptyPromptText: "Please enter a request.",
                     includeFullPdfContextRef: documentContext === "pdf" ? includeFullPdfContextRef : undefined,
                     fullPdfTextRef: documentContext === "pdf" ? fullPdfTextRef : undefined,
+                    abortSignal,
                 });
 
             } catch (err: unknown) {
+                if (isExcelorAbortError(err)) {
+                    throw err;
+                }
                 yield {
                     content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
                 };

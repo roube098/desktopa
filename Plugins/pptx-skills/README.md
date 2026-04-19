@@ -1,107 +1,126 @@
-# PPTX Plugin
+# pptx-skills
 
-## Quick Reference
+Institutional PowerPoint workflows for Excelor with one locked design system and an orientation-aware PPTX runtime.
 
-| Task | Guide |
-|------|-------|
-| Read/analyze content | `python -m markitdown presentation.pptx` |
-| Edit or create from template | Read `ppt-editing-skill` |
-| Create from scratch | Use subagents + PptxGenJS, see below |
+## Design System
 
----
+Every public skill in this plugin uses the same visual rules:
 
-## Reading Content
+- Font: `Calibri` only
+- Theme:
+  - `primary`: `0c2340`
+  - `secondary`: `3d4f66`
+  - `accent`: `64748b`
+  - `light`: `e8edf0`
+  - `bg`: `ffffff`
+- Canvas: pure white only
+- Layout: sharp, compact, finance-friendly
+- Domain bias: equity research, IC, diligence, valuation, and institutional business decks
 
-```bash
-# Text extraction
-python -m markitdown presentation.pptx
-```
+Hard prohibitions:
 
----
+- no gradients
+- no alternate palettes
+- no alternate font stacks
+- no rounded or pill-heavy card systems
+- no decorative title underlines
+- no marketing-deck styling drift
 
-## Editing Workflow
+## Runtime Support
 
-**Read `ppt-editing-skill` for full details.**
+The underlying Excelor PPTX runtime now supports:
 
-1. Analyze template with `markitdown`
-2. Unpack → manipulate slides → edit content → clean → pack
+- deck-wide `landscape` and `portrait` orientation through `createFile(format='pptx', orientation=...)`
+- session-specific geometry verification instead of fixed wide-only bounds
+- explicit editable chart types:
+  - `column`
+  - `bar`
+  - `stackedColumn`
+  - `line`
+  - `area`
+  - `pie`
+  - `donut`
+  - `scatter`
 
----
+## Public Skills
 
-## Creating from Scratch
+### Core
 
-**Use when no template or reference presentation is available.**
+- `pptx-institutional-deck`
+- `pptx-institutional-edit`
+- `pptx-institutional-research`
 
-1. Search to understand user requirements
-2. Use color-font-skill to select palette and fonts (for **investment research / equity memo** decks, use palette **#19** and read **investment-research-skill**)
-3. Read ppt-orchestra-skill to design your PPT outline
-4. Spawn subagents to create slide JS files (max 5 concurrent)
-5. Compile all slide modules into final PPTX
+### Orientation
 
-### Investment research style
+- `pptx-institutional-landscape`
+- `pptx-institutional-portrait`
 
-For IC memos, diligence summaries, comps/valuation decks, and sell-side–style reports:
+### Chart And Visual Skills
 
-- Follow **investment-research-skill** (thesis-led titles, sourced data, dense tables).
-- Add **financial-data-page-generator** for KPI/comps/valuation slides and **legal-disclaimer-page-generator** when a disclaimer or safe-harbor slide is required.
+- `pptx-chart-column`
+- `pptx-chart-bar`
+- `pptx-chart-stacked-column`
+- `pptx-chart-line`
+- `pptx-chart-area`
+- `pptx-chart-pie`
+- `pptx-chart-donut`
+- `pptx-chart-scatter`
+- `pptx-visual-table`
+- `pptx-visual-growth-story`
 
-### Subagent Types
+## Usage Model
 
-- `cover-page-generator` - Cover slide
-- `table-of-contents-generator` - TOC slide
-- `section-divider-generator` - Section transition
-- `content-page-generator` - Content slides
-- `market-narrative-page-generator` - Market headline + adoption S-curve + four-column footer (TAM / “where we are on the curve”)
-- `dashboard-chart-generator` - Default chart styling (capsule columns, overlapping groups, pie/doughnut, pills, grids) for **any** theme — light, dark, or brand; dark+lime is one preset
-- `financial-data-page-generator` - Tables, KPI strips, charts + source (research / finance)
-- `legal-disclaimer-page-generator` - Disclaimers, safe harbor, forward-looking statements
-- `summary-page-generator` - Summary/CTA slide
+Use the skills in this order:
 
-### Output Structure
+1. Read `pptx-institutional-deck`.
+2. Read the orientation skill that matches the requested deck.
+3. Read the chart or visual skill that matches the slide type.
+4. If the deck is research-specific, also read `pptx-institutional-research`.
+5. If the task is editing an existing deck, switch to `pptx-institutional-edit`.
 
-```
-slides/
-├── slide-01.js          # Slide modules
-├── slide-02.js
-├── ...
-├── imgs/                # Images used in slides
-└── output/              # Final artifacts
-    └── presentation.pptx
-```
+## Excelor Tool Mapping
 
-### Example: market narrative (S-curve) slide
+Create-from-scratch workflows:
 
-From repo root:
+- `createFile`
+- `addSlide`
+- `setSlideText`
+- `formatSlideText`
+- `addShape`
+- `addChart`
+- `insertImage`
+- `verifySlides`
+- `compilePresentationSlides`
 
-```bash
-cd plugins/pptx-plugin/examples
-npm install
-node market-narrative-slide.example.js
-```
+Edit-existing workflows:
 
-Writes `market-narrative-slide-preview.pptx` in the same folder (requires `pptxgenjs`). Use **`market-narrative-page-generator`** for the same layout with your copy.
+- `extractPresentationText`
+- `preparePresentationTemplate`
+- `duplicatePresentationSlide`
+- `deletePresentationSlides`
+- `reorderPresentationSlides`
+- `cleanPresentationPackage`
+- `packPresentationTemplate`
+- `verifySlides`
 
-**Dark dashboard charts** (pie + pills + capsule bars + stepped overlapping columns):
+## Examples
 
-```bash
-cd plugins/pptx-plugin/examples
-npm install
-node dark-dashboard-charts.example.js
-```
+See [examples/README.md](C:/Users/roube/Desktop/codex%20powered%20excelor/excelor/Plugins/pptx-skills/examples/README.md) for rebuildable references:
 
-Writes `dark-dashboard-charts-preview.pptx` (two slides, **dark neon** preset). Use **`dashboard-chart-generator`** for the same geometry on **any** palette (swap `theme` / colors per agent).
+- orientation examples:
+  - `institutional-landscape.example.js`
+  - `institutional-portrait.example.js`
+- chart examples:
+  - `chart-column.example.js`
+  - `chart-bar.example.js`
+  - `chart-stacked-column.example.js`
+  - `chart-line.example.js`
+  - `chart-area.example.js`
+  - `chart-pie.example.js`
+  - `chart-donut.example.js`
+  - `chart-scatter.example.js`
+- visual examples:
+  - `visual-table.example.js`
+  - `visual-growth-story.example.js`
 
-### Tell Subagents
-
-1. File naming: `slides/slide-01.js`, `slides/slide-02.js`
-2. Images go in: `slides/imgs/`
-3. Final PPTX goes in: `slides/output/`
-4. Dimensions: 10" × 5.625" (LAYOUT_16x9)
-5. Fonts: Chinese=Microsoft YaHei, English=**Inter** (install: [Google Fonts — Inter](https://fonts.google.com/specimen/Inter); if unavailable use Segoe UI)
-6. Colors: 6-char hex without # (e.g. `"FF0000"`)
-
----
-
-## QA & Dependencies
-
-See **ppt-orchestra-skill** for QA process and dependencies.
+Generated `.pptx` files and vendored dependencies remain excluded from the plugin.

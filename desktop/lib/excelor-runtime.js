@@ -4,6 +4,7 @@
  */
 const crypto = require("crypto");
 const { EventEmitter } = require("events");
+const fs = require("fs");
 const path = require("path");
 const ExcelorProcess = require("./excelor-process");
 
@@ -98,6 +99,113 @@ function buildMissingProviderEnvMessage(providerId, envName, modelId) {
   return `Excelor requires ${envName} for ${providerLabel} before launching this run.`;
 }
 
+function createEmptyPlanMode() {
+  return {
+    active: false,
+    status: "inactive",
+    revision: 0,
+    previousMode: "default",
+    approvedPlan: null,
+  };
+}
+
+function normalizePlanModeState(value) {
+  if (!value || typeof value !== "object") {
+    return createEmptyPlanMode();
+  }
+
+  const normalized = {
+    ...createEmptyPlanMode(),
+    ...value,
+  };
+
+  normalized.active = normalized.active === true;
+  normalized.status = ["active", "awaiting_approval", "approved"].includes(normalizeText(normalized.status))
+    ? normalizeText(normalized.status)
+    : (normalized.active ? "active" : "inactive");
+  normalized.revision = Number.isFinite(normalized.revision) ? Number(normalized.revision) : 0;
+  normalized.previousMode = normalizeText(normalized.previousMode) === "plan" ? "plan" : "default";
+  normalized.planId = normalizeText(normalized.planId) || undefined;
+  normalized.enteredAt = normalizeText(normalized.enteredAt) || undefined;
+  normalized.draftPath = normalizeText(normalized.draftPath) || undefined;
+
+  if (normalized.approvedPlan && typeof normalized.approvedPlan === "object") {
+    normalized.approvedPlan = {
+      ...normalized.approvedPlan,
+      planId: normalizeText(normalized.approvedPlan.planId),
+      proposalId: normalizeText(normalized.approvedPlan.proposalId),
+      title: normalizeText(normalized.approvedPlan.title),
+      summary: normalizeText(normalized.approvedPlan.summary),
+      body: String(normalized.approvedPlan.body || "").trim(),
+      revision: Number.isFinite(normalized.approvedPlan.revision) ? Number(normalized.approvedPlan.revision) : normalized.revision,
+      approvedAt: normalizeText(normalized.approvedPlan.approvedAt) || undefined,
+      draftPath: normalizeText(normalized.approvedPlan.draftPath) || undefined,
+    };
+  } else {
+    normalized.approvedPlan = null;
+  }
+
+  // Reconcile active/status so downstream prompts never see contradictions.
+  if (!normalized.active) {
+    normalized.status = normalized.approvedPlan ? "approved" : "inactive";
+  } else if (normalized.status === "inactive" || normalized.status === "approved") {
+    normalized.status = "active";
+  }
+
+  return normalized;
+}
+
+function ensureParentDir(filePath) {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function normalizeRuntimeMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({
+      id: normalizeText(entry.id) || newId("msg"),
+      role: normalizeText(entry.role) || "assistant",
+      text: String(entry.text || ""),
+      createdAt: normalizeText(entry.createdAt) || nowIso(),
+    }));
+}
+
+function normalizeRuntimeArray(entries) {
+  return Array.isArray(entries)
+    ? entries.filter((entry) => entry && typeof entry === "object")
+    : [];
+}
+
+function normalizeRestoredThread(thread) {
+  if (!thread || typeof thread !== "object") {
+    return null;
+  }
+
+  const createdAt = normalizeText(thread.createdAt) || nowIso();
+  const wasRunning = normalizeText(thread.status) === "running" || Boolean(thread.activeTurnId);
+  const lastError = normalizeText(thread.lastError);
+
+  return {
+    id: normalizeText(thread.id) || newId("excelor-thread"),
+    status: "idle",
+    createdAt,
+    updatedAt: nowIso(),
+    activeTurnId: null,
+    messages: normalizeRuntimeMessages(thread.messages),
+    activity: normalizeRuntimeArray(thread.activity),
+    lastError: wasRunning
+      ? (lastError || "Previous run ended before completion.")
+      : lastError,
+    subagents: normalizeRuntimeArray(thread.subagents),
+    subagentPrompts: normalizeRuntimeArray(thread.subagentPrompts),
+    skillProposals: normalizeRuntimeArray(thread.skillProposals),
+    planMode: normalizePlanModeState(thread.planMode),
+    planProposals: normalizeRuntimeArray(thread.planProposals),
+  };
+}
+
 class ExcelorRuntime extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -110,12 +218,19 @@ class ExcelorRuntime extends EventEmitter {
     this.onMcpAppToolResult = typeof options.onMcpAppToolResult === "function"
       ? options.onMcpAppToolResult
       : null;
+    this.promptSkillScriptApproval = typeof options.promptSkillScriptApproval === "function"
+      ? options.promptSkillScriptApproval
+      : null;
+    this.promptSkillEnvSecret = typeof options.promptSkillEnvSecret === "function"
+      ? options.promptSkillEnvSecret
+      : null;
     this.thread = null;
     this.conversationId = newId("conv");
     this.rootDir = options.rootDir || path.resolve(__dirname, "..", "..");
     this.excelorDir = options.excelorDir || path.join(this.rootDir, "excelor");
     this.bundledBunPath = options.bundledBunPath || "";
     this.port = Number.isFinite(options.port) ? Number(options.port) : DEFAULT_EXCELOR_PORT;
+    this.transcriptPath = normalizeText(options.transcriptPath);
     this._process = null;
     this._processReady = false;
     this._processEnvSignature = "";
@@ -125,6 +240,55 @@ class ExcelorRuntime extends EventEmitter {
     this._rejectReadyPromise = null;
     this._draftAssistantText = "";
     this._pendingSubagentPrompts = new Map();
+    /** Timestamp (ms) of last user-initiated exitPlanMode; used to ignore stale agent plan_mode_changed events. */
+    this._userPlanExitAt = 0;
+    this._restoreTranscript();
+  }
+
+  _readTranscriptFile() {
+    if (!this.transcriptPath) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(fs.readFileSync(this.transcriptPath, "utf8"));
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  _restoreTranscript() {
+    const persisted = this._readTranscriptFile();
+    if (!persisted || typeof persisted !== "object") {
+      return;
+    }
+
+    const restoredThread = normalizeRestoredThread(persisted.thread);
+    const restoredConversationId = normalizeText(persisted.conversationId);
+    if (restoredThread) {
+      this.thread = restoredThread;
+    }
+    if (restoredConversationId) {
+      this.conversationId = restoredConversationId;
+    }
+    this._draftAssistantText = "";
+  }
+
+  _persistTranscript() {
+    if (!this.transcriptPath) {
+      return;
+    }
+
+    const thread = this.bootstrap();
+    const payload = {
+      version: 1,
+      savedAt: nowIso(),
+      conversationId: this.conversationId,
+      thread: clone(thread),
+    };
+
+    ensureParentDir(this.transcriptPath);
+    fs.writeFileSync(this.transcriptPath, JSON.stringify(payload, null, 2), "utf8");
   }
 
   bootstrap() {
@@ -141,6 +305,8 @@ class ExcelorRuntime extends EventEmitter {
         subagents: [],
         subagentPrompts: [],
         skillProposals: [],
+        planMode: createEmptyPlanMode(),
+        planProposals: [],
       };
     }
     return this.thread;
@@ -152,6 +318,8 @@ class ExcelorRuntime extends EventEmitter {
       context: this.getContext(),
       draftAssistantText: this._draftAssistantText || "",
       conversationId: this.conversationId,
+      planMode: normalizePlanModeState(this.bootstrap().planMode),
+      planProposals: Array.isArray(this.bootstrap().planProposals) ? this.bootstrap().planProposals : [],
     });
   }
 
@@ -191,7 +359,7 @@ class ExcelorRuntime extends EventEmitter {
       await fetch(`http://localhost:${this.port}/abort`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: this.conversationId }),
+        body: JSON.stringify({ conversationId: this.conversationId, reason }),
       });
     } catch (_error) {
       // Best effort: clear local state even if the abort request races or the server is already gone.
@@ -202,11 +370,12 @@ class ExcelorRuntime extends EventEmitter {
     thread.updatedAt = nowIso();
     thread.lastError = reason;
     this._draftAssistantText = "";
+    const isUserInterrupted = reason === "Interrupted by user.";
     this.pushActivity({
       id: newId("act"),
       kind: "status",
-      status: "failed",
-      title: "Excelor run aborted",
+      status: isUserInterrupted ? "completed" : "failed",
+      title: isUserInterrupted ? "Excelor run interrupted" : "Excelor run aborted",
       detail: reason,
       createdAt: nowIso(),
     });
@@ -476,6 +645,7 @@ class ExcelorRuntime extends EventEmitter {
       this.emitSnapshot();
     } catch (error) {
       const thread = this.bootstrap();
+      if (thread.activeTurnId !== turnId) return;
       thread.status = "idle";
       thread.activeTurnId = null;
       thread.updatedAt = nowIso();
@@ -512,6 +682,7 @@ class ExcelorRuntime extends EventEmitter {
         conversationId: this.conversationId,
         model: modelId,
         desktopContext,
+        planModeState: normalizePlanModeState(this.bootstrap().planMode),
       }),
     });
 
@@ -544,7 +715,7 @@ class ExcelorRuntime extends EventEmitter {
           event = JSON.parse(jsonStr);
         } catch (_) { continue; }
 
-        this._handleAgentEvent(event);
+        await this._handleAgentEvent(event);
         if (event.type === "done") {
           finalAnswer = event.answer || "";
           finalDoneEvent = event;
@@ -802,7 +973,54 @@ class ExcelorRuntime extends EventEmitter {
     }
   }
 
-  _handleAgentEvent(event) {
+  async _resolveSkillScriptApprovalRequest(event) {
+    let approved = false;
+    if (this.promptSkillScriptApproval) {
+      try {
+        approved = await this.promptSkillScriptApproval(event);
+      } catch (_e) {
+        approved = false;
+      }
+    }
+    try {
+      await fetch(`http://localhost:${this.port}/skill-script-approval/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: this.conversationId,
+          skillPath: event.skillPath,
+          approved,
+        }),
+      });
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  async _resolveSkillEnvSecretRequest(event) {
+    let value = null;
+    if (this.promptSkillEnvSecret) {
+      try {
+        value = await this.promptSkillEnvSecret(event);
+      } catch (_e) {
+        value = null;
+      }
+    }
+    try {
+      await fetch(`http://localhost:${this.port}/skill-env-secret/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestId: event.requestId,
+          value,
+        }),
+      });
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
+  async _handleAgentEvent(event) {
     const id = newId("act");
     const createdAt = nowIso();
 
@@ -879,6 +1097,30 @@ class ExcelorRuntime extends EventEmitter {
           createdAt,
         });
         break;
+      case "skill_implicit_invocation":
+        this.pushActivity({
+          id,
+          kind: "status",
+          status: "completed",
+          title: "Implicit skill invocation",
+          detail: `${event.skillName} (${event.scope})`,
+          createdAt,
+        });
+        break;
+      case "skill_script_approval_requested":
+        await this._resolveSkillScriptApprovalRequest(event);
+        this.pushActivity({
+          id,
+          kind: "status",
+          status: "completed",
+          title: "Skill script approval",
+          detail: event.skillName,
+          createdAt,
+        });
+        break;
+      case "skill_env_secret_requested":
+        await this._resolveSkillEnvSecretRequest(event);
+        break;
       case "skill_proposal": {
         const thread = this.bootstrap();
         const proposalEntry = {
@@ -904,6 +1146,57 @@ class ExcelorRuntime extends EventEmitter {
         });
         break;
       }
+      case "plan_mode_changed": {
+        const thread = this.bootstrap();
+        const incoming = normalizePlanModeState(event.state);
+        const planGraceMs = 5000;
+        if (
+          incoming.active
+          && this._userPlanExitAt
+          && Date.now() - this._userPlanExitAt < planGraceMs
+        ) {
+          break;
+        }
+        thread.planMode = incoming;
+        if (thread.planMode.status === "active") {
+          thread.planProposals = [];
+        }
+        this.pushActivity({
+          id,
+          kind: "plan_mode",
+          status: thread.planMode.active ? "running" : "completed",
+          title: thread.planMode.active ? "Plan mode active" : "Plan mode exited",
+          detail: `Status: ${thread.planMode.status}`,
+          createdAt,
+        });
+        break;
+      }
+      case "plan_proposal": {
+        const thread = this.bootstrap();
+        const proposalEntry = {
+          id: newId("plan-prop"),
+          proposalId: event.proposalId,
+          planId: event.planId,
+          title: event.title,
+          summary: event.summary,
+          body: event.body,
+          revision: event.revision,
+          createdAt: event.createdAt || createdAt,
+          status: "pending",
+          draftPath: event.draftPath || "",
+        };
+        thread.planProposals = [proposalEntry];
+        this.pushActivity({
+          id,
+          kind: "plan_proposal",
+          status: "pending",
+          title: `Plan proposal: ${event.title}`,
+          detail: event.summary,
+          createdAt,
+          proposalId: event.proposalId,
+        });
+        break;
+      }
       case "skills_changed":
         this.emit("skills-changed");
         break;
@@ -917,7 +1210,7 @@ class ExcelorRuntime extends EventEmitter {
         this._handleSubagentLifecycleEvent(event, id, createdAt);
         break;
     }
-    this.emitSnapshot();
+    this.emitSnapshot(event.type !== "response_delta" && event.type !== "done");
   }
 
   _handleSubagentLifecycleEvent(event, activityId, createdAt) {
@@ -1083,7 +1376,14 @@ class ExcelorRuntime extends EventEmitter {
     thread.updatedAt = nowIso();
   }
 
-  emitSnapshot() {
+  emitSnapshot(persist = true) {
+    if (persist) {
+      try {
+        this._persistTranscript();
+      } catch (_error) {
+        // Ignore transcript persistence failures and keep the runtime responsive.
+      }
+    }
     this.emit("snapshot", this.getSnapshot());
   }
 
@@ -1131,6 +1431,196 @@ class ExcelorRuntime extends EventEmitter {
 
     this.emitSnapshot();
     return this.getSnapshot();
+  }
+
+  approvePlanProposal(payload = {}) {
+    const proposalId = normalizeText(payload.proposalId);
+    if (!proposalId) {
+      return { ok: false, error: "Plan approval requires a proposalId." };
+    }
+
+    const thread = this.bootstrap();
+    const proposals = Array.isArray(thread.planProposals) ? thread.planProposals : [];
+    const proposal = proposals.find((entry) => normalizeText(entry?.proposalId) === proposalId);
+    if (!proposal) {
+      return { ok: false, error: `Plan proposal '${proposalId}' was not found.` };
+    }
+
+    const approvedAt = nowIso();
+    thread.planProposals = proposals.filter((entry) => normalizeText(entry?.proposalId) !== proposalId);
+    thread.planMode = normalizePlanModeState({
+      ...thread.planMode,
+      active: false,
+      status: "approved",
+      planId: proposal.planId,
+      revision: proposal.revision,
+      previousMode: "default",
+      approvedPlan: {
+        planId: proposal.planId,
+        proposalId: proposal.proposalId,
+        title: proposal.title,
+        summary: proposal.summary,
+        body: proposal.body,
+        revision: proposal.revision,
+        approvedAt,
+        draftPath: normalizeText(proposal.draftPath) || undefined,
+      },
+    });
+
+    this.pushActivity({
+      id: newId("act"),
+      kind: "plan_proposal",
+      status: "completed",
+      title: `Plan approved: ${proposal.title}`,
+      detail: proposal.summary,
+      createdAt: approvedAt,
+      proposalId,
+    });
+
+    this.emitSnapshot();
+    return { ok: true, proposalId, approvedAt, message: "Plan approved." };
+  }
+
+  enterPlanMode() {
+    const thread = this.bootstrap();
+    const currentPlanMode = normalizePlanModeState(thread.planMode);
+    if (currentPlanMode.active) {
+      return this.getSnapshot();
+    }
+
+    this._userPlanExitAt = 0;
+
+    const enteredAt = nowIso();
+    thread.planProposals = [];
+    thread.planMode = normalizePlanModeState({
+      ...currentPlanMode,
+      active: true,
+      status: "active",
+      planId: newId("plan"),
+      revision: 0,
+      enteredAt,
+      previousMode: "default",
+      draftPath: undefined,
+    });
+
+    this.pushActivity({
+      id: newId("act"),
+      kind: "status",
+      status: "running",
+      title: "Plan mode active",
+      detail: "Entered manually with /plan.",
+      createdAt: enteredAt,
+    });
+
+    this.emitSnapshot();
+    return this.getSnapshot();
+  }
+
+  exitPlanMode() {
+    const thread = this.bootstrap();
+    const currentPlanMode = normalizePlanModeState(thread.planMode);
+    if (!currentPlanMode.active) {
+      return this.getSnapshot();
+    }
+
+    this._userPlanExitAt = Date.now();
+
+    const exitedAt = nowIso();
+    thread.planProposals = [];
+    thread.planMode = normalizePlanModeState({
+      ...currentPlanMode,
+      active: false,
+      status: currentPlanMode.approvedPlan ? "approved" : "inactive",
+      previousMode: "default",
+    });
+
+    this.pushActivity({
+      id: newId("act"),
+      kind: "status",
+      status: "completed",
+      title: "Plan mode exited",
+      detail: `Status: ${thread.planMode.status}`,
+      createdAt: exitedAt,
+    });
+
+    this.emitSnapshot();
+    return this.getSnapshot();
+  }
+
+  requestPlanProposalRevision(payload = {}) {
+    const proposalId = normalizeText(payload.proposalId);
+    const note = normalizeText(payload.note);
+    if (!proposalId) {
+      return { ok: false, error: "Plan revision requires a proposalId." };
+    }
+    if (!note) {
+      return { ok: false, error: "Plan revision requires a revision note." };
+    }
+
+    const thread = this.bootstrap();
+    const proposals = Array.isArray(thread.planProposals) ? thread.planProposals : [];
+    const proposal = proposals.find((entry) => normalizeText(entry?.proposalId) === proposalId);
+    if (!proposal) {
+      return { ok: false, error: `Plan proposal '${proposalId}' was not found.` };
+    }
+
+    thread.planProposals = proposals.filter((entry) => normalizeText(entry?.proposalId) !== proposalId);
+    thread.planMode = normalizePlanModeState({
+      ...thread.planMode,
+      active: true,
+      status: "active",
+      planId: proposal.planId,
+      revision: proposal.revision,
+      previousMode: "default",
+    });
+
+    this.pushActivity({
+      id: newId("act"),
+      kind: "plan_proposal",
+      status: "running",
+      title: `Plan revision requested: ${proposal.title}`,
+      detail: note,
+      createdAt: nowIso(),
+      proposalId,
+    });
+
+    this.emitSnapshot();
+    return { ok: true, proposalId, message: "Plan revision requested." };
+  }
+
+  rejectPlanProposal(payload = {}) {
+    const proposalId = normalizeText(payload.proposalId);
+    if (!proposalId) {
+      return { ok: false, error: "Plan rejection requires a proposalId." };
+    }
+
+    const thread = this.bootstrap();
+    const proposals = Array.isArray(thread.planProposals) ? thread.planProposals : [];
+    const proposal = proposals.find((entry) => normalizeText(entry?.proposalId) === proposalId);
+    if (!proposal) {
+      return { ok: false, error: `Plan proposal '${proposalId}' was not found.` };
+    }
+
+    thread.planProposals = proposals.filter((entry) => normalizeText(entry?.proposalId) !== proposalId);
+    thread.planMode = normalizePlanModeState({
+      ...thread.planMode,
+      active: false,
+      status: thread.planMode?.approvedPlan ? "approved" : "inactive",
+      previousMode: "default",
+    });
+
+    this.pushActivity({
+      id: newId("act"),
+      kind: "plan_proposal",
+      status: "failed",
+      title: `Plan rejected: ${proposal.title}`,
+      detail: proposal.summary,
+      createdAt: nowIso(),
+      proposalId,
+    });
+
+    this.emitSnapshot();
+    return { ok: true, proposalId, message: "Plan rejected." };
   }
 
   async resetConversation() {

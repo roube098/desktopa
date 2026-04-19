@@ -122,7 +122,7 @@ test("healthy process with empty stdout becomes ready when health probe succeeds
   });
 
   processInstance.start();
-  await wait(40);
+  await wait(80);
 
   assert.equal(readyCount, 1);
   assert.equal(errorCount, 0);

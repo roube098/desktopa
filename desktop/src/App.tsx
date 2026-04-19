@@ -119,7 +119,7 @@ export default function App() {
     const excelorRuntime = useLocalRuntime(
         useMemo(
             () => ({
-                async *run({ messages }) {
+                async *run({ messages, abortSignal }) {
                     yield* streamExcelorAssistantTurn({
                         messages,
                         requestedScope: MAIN_SCOPE,
@@ -127,6 +127,7 @@ export default function App() {
                         emptyPromptText: 'Please enter a question.',
                         includeFullPdfContextRef,
                         fullPdfTextRef,
+                        abortSignal,
                     });
                 },
             }),
@@ -658,6 +659,8 @@ export default function App() {
                 subagentActivity={excelorSnapshot?.activity ?? []}
                 promptHistory={excelorSnapshot?.subagentPrompts ?? []}
                 skillProposals={excelorSnapshot?.skillProposals ?? []}
+                planMode={excelorSnapshot?.planMode ?? null}
+                planProposals={excelorSnapshot?.planProposals ?? []}
                 excelorConversationId={excelorSnapshot?.conversationId}
                 inlineMcpApps={inlineMcpApps}
             />
@@ -796,6 +799,9 @@ export default function App() {
                                         activity={excelorSnapshot?.activity ?? []}
                                         promptHistory={excelorSnapshot?.subagentPrompts ?? []}
                                         skillProposals={excelorSnapshot?.skillProposals ?? []}
+                                        planProposals={excelorSnapshot?.planProposals ?? []}
+                                        planMode={excelorSnapshot?.planMode ?? null}
+                                        excelorPlanScope={MAIN_SCOPE}
                                         excelorConversationId={excelorSnapshot?.conversationId}
                                     />
                                 </div>

@@ -1,11 +1,22 @@
 {
-  "name": "pptx-plugin-examples",
+  "name": "pptx-skills-examples",
   "version": "1.0.0",
   "private": true,
-  "main": "market-narrative-slide.example.js",
+  "main": "institutional-landscape.example.js",
   "scripts": {
-    "market-slide": "node market-narrative-slide.example.js",
-    "dark-charts": "node dark-dashboard-charts.example.js"
+    "deck:landscape": "node institutional-landscape.example.js",
+    "deck:portrait": "node institutional-portrait.example.js",
+    "chart:column": "node chart-column.example.js",
+    "chart:bar": "node chart-bar.example.js",
+    "chart:stacked-column": "node chart-stacked-column.example.js",
+    "chart:line": "node chart-line.example.js",
+    "chart:area": "node chart-area.example.js",
+    "chart:pie": "node chart-pie.example.js",
+    "chart:donut": "node chart-donut.example.js",
+    "chart:scatter": "node chart-scatter.example.js",
+    "visual:table": "node visual-table.example.js",
+    "visual:growth": "node visual-growth-story.example.js",
+    "examples:smoke": "node institutional-landscape.example.js && node institutional-portrait.example.js && node chart-column.example.js && node chart-line.example.js && node visual-table.example.js && node chart-stacked-column.example.js && node visual-growth-story.example.js"
   },
   "dependencies": {
     "pptxgenjs": "^3.12.0"

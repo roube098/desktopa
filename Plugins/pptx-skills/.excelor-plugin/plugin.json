@@ -1,0 +1,6 @@
+{
+  "name": "pptx-skills",
+  "description": "Institutional PowerPoint workflows for Excelor with a single Calibri-based design system.",
+  "scopes": ["all"],
+  "skills": ["skills"]
+}

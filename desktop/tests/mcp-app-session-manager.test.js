@@ -133,7 +133,11 @@ test("McpAppSessionManager keeps one persistent session for app calls", async ()
     await manager.closeSession(session.sessionId);
 
     const requestSessionIds = calls
-      .filter((entry) => entry.method === "POST" && entry.payload?.method !== "initialize")
+      .filter((entry) =>
+        entry.method === "POST"
+        && entry.payload?.jsonrpc === "2.0"
+        && entry.payload?.method !== "initialize"
+      )
       .map((entry) => entry.headers["mcp-session-id"]);
     assert.ok(requestSessionIds.every((value) => value === "session-123"));
     assert.equal(calls.at(-1)?.method, "DELETE");

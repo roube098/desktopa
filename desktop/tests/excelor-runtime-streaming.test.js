@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const ExcelorRuntime = require("../lib/excelor-runtime");
@@ -21,18 +23,18 @@ function createDoneEvent(overrides = {}) {
   };
 }
 
-test("response_delta events accumulate draft assistant text and done clears it", () => {
+test("response_delta events accumulate draft assistant text and done clears it", async () => {
   const runtime = createRuntime();
   const thread = runtime.bootstrap();
   thread.activeTurnId = "turn-1";
 
-  runtime._handleAgentEvent({ type: "response_delta", delta: "Hello" });
-  runtime._handleAgentEvent({ type: "response_delta", delta: " world" });
+  await runtime._handleAgentEvent({ type: "response_delta", delta: "Hello" });
+  await runtime._handleAgentEvent({ type: "response_delta", delta: " world" });
 
   let snapshot = runtime.getSnapshot();
   assert.equal(snapshot.draftAssistantText, "Hello world");
 
-  runtime._handleAgentEvent({ type: "done", answer: "Hello world" });
+  await runtime._handleAgentEvent({ type: "done", answer: "Hello world" });
   snapshot = runtime.getSnapshot();
   assert.equal(snapshot.draftAssistantText, "");
 });
@@ -47,8 +49,8 @@ test("_streamRun consumes SSE response_delta events and returns final done answe
 
   const draftSnapshots = [];
   const originalHandler = runtime._handleAgentEvent.bind(runtime);
-  runtime._handleAgentEvent = (event) => {
-    originalHandler(event);
+  runtime._handleAgentEvent = async (event) => {
+    await originalHandler(event);
     if (event.type === "response_delta") {
       draftSnapshots.push(runtime.getSnapshot().draftAssistantText);
     }
@@ -71,6 +73,34 @@ test("_streamRun consumes SSE response_delta events and returns final done answe
     assert.equal(result.doneEvent?.answer, "Hello");
     assert.equal(result.doneEvent?.toolCalls?.[0]?.tool, "createFile");
     assert.deepEqual(draftSnapshots, ["Hel", "Hello"]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("_streamRun tolerates heartbeat SSE events between response and completion", async () => {
+  const runtime = createRuntime();
+  const encoder = new TextEncoder();
+  const payload =
+    'data: {"type":"response_delta","delta":"Thinking"}\n\n' +
+    'data: {"type":"heartbeat","at":"2026-04-14T05:00:00.000Z"}\n\n' +
+    'data: {"type":"done","answer":"Thinking complete","toolCalls":[]}\n\n';
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(payload));
+        controller.close();
+      },
+    }),
+  });
+
+  try {
+    const result = await runtime._streamRun("test", "openrouter:test-model");
+    assert.equal(result.answer, "Thinking complete");
+    assert.equal(result.doneEvent?.answer, "Thinking complete");
   } finally {
     global.fetch = originalFetch;
   }
@@ -111,6 +141,181 @@ test("_streamRun sends desktopContext in the /run request body", async () => {
   assert.equal(parsedBody.desktopContext.scope, "onlyoffice");
   assert.equal(parsedBody.desktopContext.documentContext, "presentation");
   assert.equal(parsedBody.desktopContext.activeFileName, "Deck.pptx");
+});
+
+test("_streamRun sends planModeState in the /run request body", async () => {
+  let parsedBody = null;
+  const runtime = createRuntime();
+  const thread = runtime.bootstrap();
+  thread.planMode = {
+    active: false,
+    status: "approved",
+    revision: 2,
+    previousMode: "default",
+    approvedPlan: {
+      planId: "plan-1",
+      proposalId: "proposal-1",
+      title: "Approved plan",
+      summary: "Summary",
+      body: "Body",
+      revision: 2,
+    },
+  };
+  const encoder = new TextEncoder();
+  const originalFetch = global.fetch;
+  global.fetch = async (_url, options = {}) => {
+    parsedBody = JSON.parse(String(options.body || "{}"));
+    return {
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"done","answer":"ok","toolCalls":[]}\n\n'));
+          controller.close();
+        },
+      }),
+    };
+  };
+
+  try {
+    await runtime._streamRun("test prompt", "openrouter:test-model");
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(parsedBody.planModeState.status, "approved");
+  assert.equal(parsedBody.planModeState.approvedPlan.title, "Approved plan");
+});
+
+test("enterPlanMode enters plan mode from an inactive state and emits a snapshot immediately", () => {
+  const runtime = createRuntime();
+  const snapshots = [];
+  runtime.on("snapshot", (snapshot) => {
+    snapshots.push(snapshot);
+  });
+
+  const snapshot = runtime.enterPlanMode();
+
+  assert.equal(snapshot.planMode.active, true);
+  assert.equal(snapshot.planMode.status, "active");
+  assert.equal(snapshot.planMode.previousMode, "default");
+  assert.equal(snapshot.planMode.revision, 0);
+  assert.match(String(snapshot.planMode.planId || ""), /^plan-/);
+  assert.equal(snapshots.at(-1)?.planMode?.active, true);
+});
+
+test("enterPlanMode is idempotent when plan mode is already active", () => {
+  const runtime = createRuntime();
+  const firstSnapshot = runtime.enterPlanMode();
+  const secondSnapshot = runtime.enterPlanMode();
+
+  assert.equal(secondSnapshot.planMode.active, true);
+  assert.equal(secondSnapshot.planMode.planId, firstSnapshot.planMode.planId);
+  assert.equal(secondSnapshot.planMode.enteredAt, firstSnapshot.planMode.enteredAt);
+  assert.equal(secondSnapshot.planProposals.length, 0);
+});
+
+test("enterPlanMode preserves the approved plan and clears pending plan proposals", () => {
+  const runtime = createRuntime();
+  const thread = runtime.bootstrap();
+  thread.planMode = {
+    active: false,
+    status: "approved",
+    revision: 2,
+    previousMode: "default",
+    approvedPlan: {
+      planId: "approved-plan",
+      proposalId: "approved-proposal",
+      title: "Approved plan",
+      summary: "Keep this context.",
+      body: "Approved body",
+      revision: 2,
+    },
+  };
+  thread.planProposals = [
+    {
+      id: "plan-prop-1",
+      proposalId: "proposal-1",
+      planId: "stale-plan",
+      title: "Pending proposal",
+      summary: "Old pending summary",
+      body: "Old pending body",
+      revision: 3,
+      createdAt: new Date().toISOString(),
+    },
+  ];
+
+  const snapshot = runtime.enterPlanMode();
+
+  assert.equal(snapshot.planMode.active, true);
+  assert.equal(snapshot.planMode.status, "active");
+  assert.equal(snapshot.planMode.approvedPlan?.title, "Approved plan");
+  assert.equal(snapshot.planProposals.length, 0);
+  assert.notEqual(snapshot.planMode.planId, "approved-plan");
+});
+
+test("exitPlanMode leaves plan mode from an active state and clears pending proposals", () => {
+  const runtime = createRuntime();
+  runtime.enterPlanMode();
+  const thread = runtime.bootstrap();
+  thread.planProposals = [
+    {
+      id: "plan-prop-1",
+      proposalId: "proposal-1",
+      planId: "plan-1",
+      title: "Pending",
+      summary: "Summary",
+      body: "Body",
+      revision: 1,
+      createdAt: new Date().toISOString(),
+    },
+  ];
+
+  const snapshots = [];
+  runtime.on("snapshot", (snapshot) => {
+    snapshots.push(snapshot);
+  });
+
+  const snapshot = runtime.exitPlanMode();
+
+  assert.equal(snapshot.planMode.active, false);
+  assert.equal(snapshot.planMode.status, "inactive");
+  assert.equal(snapshot.planProposals.length, 0);
+  assert.equal(snapshots.at(-1)?.planMode?.active, false);
+});
+
+test("exitPlanMode is idempotent when plan mode is already inactive", () => {
+  const runtime = createRuntime();
+  const first = runtime.exitPlanMode();
+  const second = runtime.exitPlanMode();
+
+  assert.equal(first.planMode.active, false);
+  assert.equal(second.planMode.active, false);
+});
+
+test("exitPlanMode preserves approvedPlan and sets status to approved", () => {
+  const runtime = createRuntime();
+  const thread = runtime.bootstrap();
+  thread.planMode = {
+    active: true,
+    status: "active",
+    planId: "plan-x",
+    revision: 1,
+    previousMode: "default",
+    approvedPlan: {
+      planId: "plan-x",
+      proposalId: "prop-x",
+      title: "Earlier approval",
+      summary: "S",
+      body: "B",
+      revision: 1,
+    },
+  };
+
+  const snapshot = runtime.exitPlanMode();
+
+  assert.equal(snapshot.planMode.active, false);
+  assert.equal(snapshot.planMode.status, "approved");
+  assert.equal(snapshot.planMode.approvedPlan?.title, "Earlier approval");
 });
 
 test("_prepareExecutionConfig rejects missing provider env before starting the server process", async () => {
@@ -419,16 +624,16 @@ test("_executeTurn keeps the assistant turn successful when the auto-open callba
   assert.ok(thread.activity.some((entry) => entry.title === "Excelor finished"));
 });
 
-test("_handleAgentEvent records tool approval and denial activity entries", () => {
+test("_handleAgentEvent records tool approval and denial activity entries", async () => {
   const runtime = createRuntime();
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_approval",
     tool: "write_file",
     args: { path: "slides/slide-01.js" },
     approved: "allow-once",
   });
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_denied",
     tool: "edit_file",
     args: { path: "C:\\workspace\\outside.txt" },
@@ -439,11 +644,11 @@ test("_handleAgentEvent records tool approval and denial activity entries", () =
   assert.ok(thread.activity.some((entry) => entry.title === "Tool denied: edit_file" && /outside\.txt/.test(entry.detail || "")));
 });
 
-test("_handleAgentEvent maps spawn_agent input onto the corresponding subagent task prompt", () => {
+test("_handleAgentEvent maps spawn_agent input onto the corresponding subagent task prompt", async () => {
   const runtime = createRuntime();
   const createdAt = new Date().toISOString();
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "subagent_spawned",
     agent_id: "subagent-1",
     conversation_id: "conv-test",
@@ -455,7 +660,7 @@ test("_handleAgentEvent maps spawn_agent input onto the corresponding subagent t
     at: createdAt,
   });
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_end",
     tool: "spawn_agent",
     args: { input: "Check workspace structure thoroughly." },
@@ -482,7 +687,7 @@ test("_handleAgentEvent forwards MCP app tool results as soon as tool_end arrive
     },
   });
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_end",
     tool: "mcp_tldraw_exec",
     args: {
@@ -525,11 +730,11 @@ test("_handleAgentEvent forwards MCP app tool results as soon as tool_end arrive
   assert.equal(calls[0].structuredContent.canvasId, "canvas-123");
 });
 
-test("_handleAgentEvent updates task prompt from send_input for an existing subagent", () => {
+test("_handleAgentEvent updates task prompt from send_input for an existing subagent", async () => {
   const runtime = createRuntime();
   const createdAt = new Date().toISOString();
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "subagent_spawned",
     agent_id: "subagent-2",
     conversation_id: "conv-test",
@@ -541,7 +746,7 @@ test("_handleAgentEvent updates task prompt from send_input for an existing suba
     at: createdAt,
   });
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_end",
     tool: "spawn_agent",
     args: {
@@ -554,7 +759,7 @@ test("_handleAgentEvent updates task prompt from send_input for an existing suba
     }),
   });
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_end",
     tool: "send_input",
     args: {
@@ -581,7 +786,7 @@ test("resetConversation clears subagents and subagentPrompts and rotates convers
   const beforeId = runtime.getSnapshot().conversationId;
   const createdAt = new Date().toISOString();
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "subagent_spawned",
     agent_id: "subagent-reset",
     nickname: "r",
@@ -591,7 +796,7 @@ test("resetConversation clears subagents and subagentPrompts and rotates convers
     depth: 1,
     at: createdAt,
   });
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_end",
     tool: "spawn_agent",
     args: { input: "task" },
@@ -655,11 +860,79 @@ test("resolveSkillProposal removes the pending proposal without mutating chat co
   assert.ok(snapshot.activity.some((entry) => entry.title === "Skill approved: mcp-connector-exploration"));
 });
 
-test("_handleAgentEvent tolerates malformed collaboration tool results without mutating task prompt", () => {
+test("_handleAgentEvent stores plan mode changes and plan proposals in the snapshot", async () => {
+  const runtime = createRuntime();
+
+  await runtime._handleAgentEvent({
+    type: "plan_mode_changed",
+    state: {
+      active: true,
+      status: "awaiting_approval",
+      planId: "plan-22",
+      revision: 3,
+      previousMode: "default",
+    },
+  });
+  await runtime._handleAgentEvent({
+    type: "plan_proposal",
+    proposalId: "proposal-22",
+    planId: "plan-22",
+    title: "Plan title",
+    summary: "Plan summary",
+    body: "## Summary\n\nBody",
+    revision: 3,
+    createdAt: "2026-04-13T10:00:00.000Z",
+  });
+
+  const snapshot = runtime.getSnapshot();
+  assert.equal(snapshot.planMode.status, "awaiting_approval");
+  assert.equal(snapshot.planProposals.length, 1);
+  assert.equal(snapshot.planProposals[0].title, "Plan title");
+});
+
+test("approvePlanProposal exits plan mode and keeps the approved plan for later turns", () => {
+  const runtime = createRuntime();
+  const thread = runtime.bootstrap();
+  thread.planMode = {
+    active: true,
+    status: "awaiting_approval",
+    planId: "plan-7",
+    revision: 1,
+    previousMode: "default",
+  };
+  thread.planProposals = [{
+    id: "entry-7",
+    proposalId: "proposal-7",
+    planId: "plan-7",
+    title: "Plan title",
+    summary: "Plan summary",
+    body: "Body",
+    revision: 1,
+    createdAt: "2026-04-13T10:00:00.000Z",
+  }];
+
+  const result = runtime.approvePlanProposal({
+    proposalId: "proposal-7",
+    planId: "plan-7",
+    title: "Plan title",
+    summary: "Plan summary",
+    body: "Body",
+    revision: 1,
+  });
+
+  assert.equal(result.ok, true);
+  const snapshot = runtime.getSnapshot();
+  assert.equal(snapshot.planMode.active, false);
+  assert.equal(snapshot.planMode.status, "approved");
+  assert.equal(snapshot.planMode.approvedPlan.title, "Plan title");
+  assert.equal(snapshot.planProposals.length, 0);
+});
+
+test("_handleAgentEvent tolerates malformed collaboration tool results without mutating task prompt", async () => {
   const runtime = createRuntime();
   const createdAt = new Date().toISOString();
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "subagent_spawned",
     agent_id: "subagent-3",
     conversation_id: "conv-test",
@@ -671,7 +944,7 @@ test("_handleAgentEvent tolerates malformed collaboration tool results without m
     at: createdAt,
   });
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_end",
     tool: "send_input",
     args: {
@@ -686,11 +959,11 @@ test("_handleAgentEvent tolerates malformed collaboration tool results without m
   assert.equal(snapshot.subagentPrompts.length, 0);
 });
 
-test("_handleAgentEvent stores task prompt even when collaboration result arrives before lifecycle event", () => {
+test("_handleAgentEvent stores task prompt even when collaboration result arrives before lifecycle event", async () => {
   const runtime = createRuntime();
   const createdAt = new Date().toISOString();
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "tool_end",
     tool: "spawn_agent",
     args: { input: "Explore CRM architecture deeply." },
@@ -701,7 +974,7 @@ test("_handleAgentEvent stores task prompt even when collaboration result arrive
     }),
   });
 
-  runtime._handleAgentEvent({
+  await runtime._handleAgentEvent({
     type: "subagent_spawned",
     agent_id: "subagent-4",
     conversation_id: "conv-test",
@@ -772,8 +1045,115 @@ test("abortTurn posts to /abort and clears the active turn locally", async () =>
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "http://localhost:27182/abort");
   assert.match(String(calls[0].options.body || ""), /conversationId/);
+  assert.match(String(calls[0].options.body || ""), /120 seconds of inactivity/);
   assert.equal(thread.status, "idle");
   assert.equal(thread.activeTurnId, null);
   assert.match(thread.lastError, /120 seconds of inactivity/);
   assert.ok(thread.activity.some((entry) => entry.title === "Excelor run aborted"));
+});
+
+test("abortTurn preserves caller-supplied user interruption reasons in snapshot and activity state", async () => {
+  const runtime = createRuntime();
+  const thread = runtime.bootstrap();
+  thread.activeTurnId = "turn-user-stop";
+  thread.status = "running";
+
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      json: async () => ({ aborted: true }),
+    };
+  };
+
+  try {
+    const snapshot = await runtime.abortTurn("Interrupted by user.");
+    assert.equal(snapshot.lastError, "Interrupted by user.");
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.match(String(calls[0].options.body || ""), /Interrupted by user\./);
+  assert.equal(thread.lastError, "Interrupted by user.");
+  assert.ok(thread.activity.some((entry) => entry.title === "Excelor run interrupted" && entry.status === "completed"));
+});
+
+test("emitSnapshot persists the current transcript when transcriptPath is configured", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "excelor-runtime-"));
+  const transcriptPath = path.join(tempDir, "current-thread.json");
+
+  try {
+    const runtime = createRuntime({ transcriptPath });
+    const thread = runtime.bootstrap();
+    thread.messages.push({
+      id: "msg-1",
+      role: "user",
+      text: "Persist this transcript.",
+      createdAt: new Date().toISOString(),
+    });
+    thread.updatedAt = new Date().toISOString();
+
+    runtime.emitSnapshot();
+
+    const persisted = JSON.parse(fs.readFileSync(transcriptPath, "utf8"));
+    assert.equal(persisted.conversationId, runtime.getSnapshot().conversationId);
+    assert.equal(persisted.thread.messages.length, 1);
+    assert.equal(persisted.thread.messages[0].text, "Persist this transcript.");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("constructor restores a persisted transcript and clears stale running state", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "excelor-runtime-"));
+  const transcriptPath = path.join(tempDir, "current-thread.json");
+
+  try {
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      version: 1,
+      conversationId: "conv-restored",
+      thread: {
+        id: "excelor-thread-restored",
+        status: "running",
+        createdAt: "2026-04-14T12:00:00.000Z",
+        updatedAt: "2026-04-14T12:00:05.000Z",
+        activeTurnId: "turn-123",
+        messages: [
+          {
+            id: "msg-user",
+            role: "user",
+            text: "Continue the transcript after restart.",
+            createdAt: "2026-04-14T12:00:00.000Z",
+          },
+        ],
+        activity: [],
+        lastError: "",
+        subagents: [],
+        subagentPrompts: [],
+        skillProposals: [],
+        planMode: {
+          active: true,
+          status: "active",
+          revision: 1,
+          previousMode: "default",
+        },
+        planProposals: [],
+      },
+    }, null, 2), "utf8");
+
+    const runtime = createRuntime({ transcriptPath });
+    const snapshot = runtime.getSnapshot();
+
+    assert.equal(snapshot.conversationId, "conv-restored");
+    assert.equal(snapshot.status, "idle");
+    assert.equal(snapshot.activeTurnId, null);
+    assert.equal(snapshot.messages.length, 1);
+    assert.equal(snapshot.messages[0].text, "Continue the transcript after restart.");
+    assert.match(snapshot.lastError, /Previous run ended before completion\./);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });

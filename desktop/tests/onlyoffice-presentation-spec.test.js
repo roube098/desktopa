@@ -19,6 +19,8 @@ test("desktop presentation helpers mirror the shared presentation spec", () => {
   assert.match(prompt, /## Role/);
   assert.match(prompt, /PptxGenJS/i);
   assert.match(prompt, /There is no live OnlyOffice editor API in this path/i);
-  assert.match(prompt, /ALWAYS run verifySlides/i);
-  assert.match(prompt, /Blank\/new presentation/i);
+  assert.match(prompt, /orientation is set once/i);
+  assert.match(prompt, /Landscape decks are 254mm wide x 143mm tall/i);
+  assert.match(prompt, /Supported chart types are exactly/i);
+  assert.match(prompt, /ALWAYS run `verifySlides`/i);
 });

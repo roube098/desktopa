@@ -80,8 +80,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     excelorRunTurn: (input, scope = "main") => ipcRenderer.invoke("excelor-run-turn", { input, scope }),
     excelorListSubagents: (scope = "main") => ipcRenderer.invoke("excelor-list-subagents", { scope }),
     excelorLaunch: (input, scope = "main") => ipcRenderer.invoke("excelor-launch", { input, scope }),
-    excelorAbortTurn: (scope = "main") => ipcRenderer.invoke("excelor-abort-turn", { scope }),
+    excelorEnterPlanMode: (scope = "main") => ipcRenderer.invoke("excelor-enter-plan-mode", { scope }),
+    excelorExitPlanMode: (scope = "main") => ipcRenderer.invoke("excelor-exit-plan-mode", { scope }),
+    excelorAbortTurn: (scope = "main", reason) => ipcRenderer.invoke("excelor-abort-turn", { scope, reason }),
     approveSkillProposal: (payload, scope = "main") => ipcRenderer.invoke("approve-skill-proposal", payload || {}, scope),
+    approvePlanProposal: (payload, scope = "main") => ipcRenderer.invoke("approve-plan-proposal", payload || {}, scope),
+    requestPlanProposalRevision: (payload, scope = "main") => ipcRenderer.invoke("request-plan-proposal-revision", payload || {}, scope),
+    rejectPlanProposal: (payload, scope = "main") => ipcRenderer.invoke("reject-plan-proposal", payload || {}, scope),
     onExcelorSnapshot: (callback) => {
         const handler = (_event, snapshot) => callback(snapshot);
         ipcRenderer.on("excelor-snapshot", handler);
@@ -137,6 +142,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
     // Skills
     getSkills: () => ipcRenderer.invoke("get-skills"),
+    listSkills: (params) => ipcRenderer.invoke("skills:list", params || {}),
     setSkillEnabled: (skillId, enabled) => ipcRenderer.invoke("set-skill-enabled", skillId, enabled),
     resyncSkills: () => ipcRenderer.invoke("resync-skills"),
     onSkillsChanged: (callback) => {
@@ -144,6 +150,25 @@ contextBridge.exposeInMainWorld("electronAPI", {
         ipcRenderer.on("skills-changed", handler);
         return () => ipcRenderer.removeListener("skills-changed", handler);
     },
+    onSkillsUpdateAvailable: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on("skills:updateAvailable", handler);
+        return () => ipcRenderer.removeListener("skills:updateAvailable", handler);
+    },
+    onSkillEnvSecretRequest: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on("skill:env-secret:request", handler);
+        return () => ipcRenderer.removeListener("skill:env-secret:request", handler);
+    },
+    submitSkillEnvSecret: (requestId, value) =>
+        ipcRenderer.send("skill:env-secret:response", { requestId, value: typeof value === "string" ? value : null }),
+    onSkillScriptApprovalRequest: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on("skill:script-approval:request", handler);
+        return () => ipcRenderer.removeListener("skill:script-approval:request", handler);
+    },
+    submitSkillScriptApproval: (requestId, approved) =>
+        ipcRenderer.send("skill:script-approval:response", { requestId, approved: approved === true }),
     getSkillTree: (skillId) => ipcRenderer.invoke("get-skill-tree", skillId),
     readSkillFile: (filePath) => ipcRenderer.invoke("read-skill-file", filePath),
     openSkillInEditor: (filePath) => ipcRenderer.invoke("open-skill-in-editor", filePath),

@@ -676,7 +676,7 @@ Skills are loaded from multiple sources in priority order:
 3. **Project skills** — `<workspace>/.excelor/skills/` (repo-specific)
 4. **Plugin skills** — contributed by installed plugins
 
-Optional filtering: `EXCELOR_SKILLS_MODE=enabled-only` + `EXCELOR_ENABLED_SKILLS` to restrict discovery.
+**Enable/disable skills** via `~/.excelor/settings.json` and `<workspace>/.excelor/settings.json` using `skills.config[]` (path or name selectors) and `skills.bundled.enabled` for bundled system skills — this is the canonical surface Dexter reads. **Session override only:** `EXCELOR_SKILLS_MODE=enabled-only` plus `EXCELOR_ENABLED_SKILLS` (JSON array or comma-separated names) can further restrict discovery for a single process.
 
 ### Built-In Skills
 
@@ -927,8 +927,8 @@ For deep research sessions, the agent uses:
 | `EXCELOR_PYTHON` | Custom Python interpreter path |
 | `EXCELOR_WORKSPACE_DIR` | Override workspace root directory |
 | `EXCELOR_RUNTIME_SCOPE` | Runtime scope: `main`, `onlyoffice`, `all` |
-| `EXCELOR_SKILLS_MODE` | `enabled-only` to restrict skill discovery |
-| `EXCELOR_ENABLED_SKILLS` | Comma-separated list of enabled skill names |
+| `EXCELOR_SKILLS_MODE` | **Session override:** set to `enabled-only` to restrict discovery (use with `EXCELOR_ENABLED_SKILLS`); prefer `skills.config[]` in settings for normal toggles |
+| `EXCELOR_ENABLED_SKILLS` | **Session override:** JSON array or comma-separated skill names when `EXCELOR_SKILLS_MODE=enabled-only` |
 
 ### Tracing & Observability
 

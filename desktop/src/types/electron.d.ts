@@ -280,6 +280,41 @@ interface ExcelorSkillProposalEntry {
     status?: 'pending' | 'accepted' | 'rejected';
 }
 
+interface ExcelorApprovedPlanEntry {
+    planId: string;
+    proposalId: string;
+    title: string;
+    summary: string;
+    body: string;
+    revision: number;
+    approvedAt?: string;
+    draftPath?: string;
+}
+
+interface ExcelorPlanModeEntry {
+    active: boolean;
+    status: 'inactive' | 'active' | 'awaiting_approval' | 'approved';
+    planId?: string;
+    revision: number;
+    enteredAt?: string;
+    previousMode: 'default' | 'plan';
+    approvedPlan?: ExcelorApprovedPlanEntry | null;
+    draftPath?: string;
+}
+
+interface ExcelorPlanProposalEntry {
+    id: string;
+    proposalId: string;
+    planId: string;
+    title: string;
+    summary: string;
+    body: string;
+    revision: number;
+    createdAt: string;
+    status?: 'pending' | 'approved' | 'rejected' | 'revision_requested';
+    draftPath?: string;
+}
+
 interface SkillApprovalPayload {
     proposalId: string;
     action: 'create' | 'update';
@@ -326,7 +361,36 @@ interface ExcelorSnapshot {
     subagents: ExcelorSubagentDescriptor[];
     subagentPrompts: ExcelorSubagentPromptEntry[];
     skillProposals?: ExcelorSkillProposalEntry[];
+    planMode?: ExcelorPlanModeEntry | null;
+    planProposals?: ExcelorPlanProposalEntry[];
     context: ExcelorContext;
+}
+
+interface PlanApprovalPayload {
+    proposalId: string;
+    planId: string;
+    title: string;
+    summary: string;
+    body: string;
+    revision: number;
+    draftPath?: string;
+}
+
+interface PlanRevisionPayload {
+    proposalId: string;
+    note: string;
+}
+
+interface PlanRejectionPayload {
+    proposalId: string;
+}
+
+interface PlanProposalResult {
+    ok: boolean;
+    error?: string;
+    message?: string;
+    proposalId?: string;
+    approvedAt?: string;
 }
 
 interface ProviderMeta {
@@ -402,6 +466,36 @@ interface SkillFileContent {
     path: string;
     content: string;
     updatedAt: string;
+}
+
+interface SkillsListEntryV2 {
+    cwd: string;
+    skills: Array<{
+        name: string;
+        description: string;
+        path: string;
+        enabled: boolean;
+    }>;
+    errors: Array<{ path: string; message: string }>;
+}
+
+interface SkillsListResponseV2 {
+    version: 2;
+    entries: SkillsListEntryV2[];
+}
+
+interface SkillEnvSecretRequestPayload {
+    requestId: string;
+    name: string;
+    description?: string;
+    skillName: string;
+}
+
+interface SkillScriptApprovalRequestPayload {
+    requestId: string;
+    skillName: string;
+    skillPath: string;
+    transports: string[];
 }
 
 interface DesktopPlugin {
@@ -533,8 +627,13 @@ interface ElectronAPI {
     excelorRunTurn: (input: string, scope?: ExcelorScope) => Promise<ExcelorSnapshot>;
     excelorListSubagents: (scope?: ExcelorScope) => Promise<ExcelorSubagentDescriptor[]>;
     excelorLaunch: (input?: string, scope?: ExcelorScope) => Promise<ExcelorSnapshot>;
-    excelorAbortTurn: (scope?: ExcelorScope) => Promise<ExcelorSnapshot>;
+    excelorEnterPlanMode: (scope?: ExcelorScope) => Promise<ExcelorSnapshot>;
+    excelorExitPlanMode: (scope?: ExcelorScope) => Promise<ExcelorSnapshot>;
+    excelorAbortTurn: (scope?: ExcelorScope, reason?: string) => Promise<ExcelorSnapshot>;
     approveSkillProposal: (payload: SkillApprovalPayload, scope?: ExcelorScope) => Promise<SkillApprovalResult>;
+    approvePlanProposal: (payload: PlanApprovalPayload, scope?: ExcelorScope) => Promise<PlanProposalResult>;
+    requestPlanProposalRevision: (payload: PlanRevisionPayload, scope?: ExcelorScope) => Promise<PlanProposalResult>;
+    rejectPlanProposal: (payload: PlanRejectionPayload, scope?: ExcelorScope) => Promise<PlanProposalResult>;
     onExcelorSnapshot: (callback: (snapshot: ExcelorSnapshot) => void) => () => void;
     updateExcelorContext: (scopeOrContext: ExcelorScope | ExcelorContext, context?: ExcelorContext) => Promise<ExcelorContext>;
     getActiveMcpApp: () => Promise<McpAppState | null>;
@@ -598,9 +697,15 @@ interface ElectronAPI {
 
     // Skills
     getSkills: () => Promise<DesktopSkill[]>;
+    listSkills: (params?: { cwds?: string[]; forceReload?: boolean }) => Promise<SkillsListResponseV2>;
     setSkillEnabled: (skillId: string, enabled: boolean) => Promise<DesktopSkill[]>;
     resyncSkills: () => Promise<DesktopSkill[]>;
     onSkillsChanged: (callback: () => void) => () => void;
+    onSkillsUpdateAvailable: (callback: (payload: { version?: number }) => void) => () => void;
+    onSkillEnvSecretRequest: (callback: (payload: SkillEnvSecretRequestPayload) => void) => () => void;
+    submitSkillEnvSecret: (requestId: string, value: string | null) => void;
+    onSkillScriptApprovalRequest: (callback: (payload: SkillScriptApprovalRequestPayload) => void) => () => void;
+    submitSkillScriptApproval: (requestId: string, approved: boolean) => void;
     getSkillTree: (skillId: string) => Promise<SkillTreeNode | null>;
     readSkillFile: (filePath: string) => Promise<SkillFileContent>;
     openSkillInEditor: (filePath: string) => Promise<{ success: boolean }>;

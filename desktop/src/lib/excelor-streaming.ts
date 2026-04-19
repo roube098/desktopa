@@ -1,4 +1,5 @@
 import type { MutableRefObject } from "react";
+import { PLAN_MODE_ACTIVATED_MESSAGE, parsePlanSlashCommand } from "./plan-command";
 
 type ExcelorStreamingTextContent = {
     type: "text";
@@ -26,7 +27,8 @@ export type ExcelorStreamingQueueItem =
     | { type: "delta"; text: string }
     | { type: "replace"; text: string }
     | { type: "done"; answer: string }
-    | { type: "error"; message: string };
+    | { type: "error"; message: string }
+    | { type: "abort" };
 
 export interface ExcelorStreamingOptions {
     messages: readonly ExcelorStreamingMessage[];
@@ -35,9 +37,12 @@ export interface ExcelorStreamingOptions {
     emptyPromptText: string;
     includeFullPdfContextRef?: MutableRefObject<boolean>;
     fullPdfTextRef?: MutableRefObject<string>;
+    abortSignal?: AbortSignal;
 }
 
 const EXCELOR_INACTIVITY_TIMEOUT_MS = 120_000;
+export const EXCELOR_USER_ABORT_REASON = "Interrupted by user.";
+export const EXCELOR_INACTIVITY_ABORT_REASON = "Excelor timed out after 120 seconds of inactivity.";
 
 function toTextYield(text: string): ExcelorStreamingYield {
     return {
@@ -45,15 +50,42 @@ function toTextYield(text: string): ExcelorStreamingYield {
     };
 }
 
-function buildUserText(
+function createAbortError(message = EXCELOR_USER_ABORT_REASON): Error {
+    if (typeof DOMException !== "undefined") {
+        return new DOMException(message, "AbortError");
+    }
+
+    const error = new Error(message);
+    error.name = "AbortError";
+    return error;
+}
+
+export function isExcelorAbortError(error: unknown): boolean {
+    return error instanceof Error && error.name === "AbortError";
+}
+
+function getLastMessage(
     messages: readonly ExcelorStreamingMessage[],
+): ExcelorStreamingMessage | undefined {
+    return messages[messages.length - 1];
+}
+
+function buildComposerText(
+    lastMessage?: ExcelorStreamingMessage,
 ): string {
-    const lastMessage = messages[messages.length - 1];
-    let userText =
+    return (
         lastMessage?.content
             ?.filter((content): content is ExcelorStreamingTextContent => content.type === "text")
             .map((content) => content.text)
-            .join("") ?? "";
+            .join("") ?? ""
+    );
+}
+
+function prependPdfAttachmentContext(
+    lastMessage: ExcelorStreamingMessage | undefined,
+    userText: string,
+): string {
+    let nextText = userText;
 
     const pdfParts =
         lastMessage?.content?.filter(
@@ -63,11 +95,11 @@ function buildUserText(
     for (const part of pdfParts) {
         const { fileName, text } = part.data ?? {};
         if (fileName && text != null) {
-            userText = `Context from PDF "${fileName}":\n"""${text}"""\n\n${userText}`;
+            nextText = `Context from PDF "${fileName}":\n"""${text}"""\n\n${nextText}`;
         }
     }
 
-    return userText;
+    return nextText;
 }
 
 export async function* streamExcelorAssistantTurn({
@@ -77,8 +109,52 @@ export async function* streamExcelorAssistantTurn({
     emptyPromptText,
     includeFullPdfContextRef,
     fullPdfTextRef,
+    abortSignal,
 }: ExcelorStreamingOptions): AsyncGenerator<ExcelorStreamingYield> {
-    let userText = buildUserText(messages);
+    if (!window.electronAPI) {
+        yield toTextYield("Electron API not available.");
+        return;
+    }
+
+    const lastMessage = getLastMessage(messages);
+    const composerText = buildComposerText(lastMessage);
+    const planCommand = parsePlanSlashCommand(composerText);
+    const launchPrompt = planCommand ? planCommand.prompt : composerText;
+
+    if (planCommand) {
+        if (!window.electronAPI.excelorEnterPlanMode) {
+            yield toTextYield("Plan mode entry is not available in this build.");
+            return;
+        }
+
+        let bootSnapshot: ExcelorSnapshot | null = null;
+        try {
+            bootSnapshot = await window.electronAPI.excelorBootstrap(requestedScope);
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            yield toTextYield(`Error: ${message}`);
+            return;
+        }
+
+        const planAlreadyActive = Boolean(bootSnapshot?.planMode?.active);
+
+        if (!planAlreadyActive) {
+            try {
+                await window.electronAPI.excelorEnterPlanMode(requestedScope);
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
+                yield toTextYield(`Error: ${message}`);
+                return;
+            }
+        }
+
+        if (!launchPrompt.trim()) {
+            yield toTextYield(PLAN_MODE_ACTIVATED_MESSAGE);
+            return;
+        }
+    }
+
+    let userText = prependPdfAttachmentContext(lastMessage, launchPrompt);
 
     if (!userText.trim()) {
         yield toTextYield(emptyPromptText);
@@ -88,11 +164,6 @@ export async function* streamExcelorAssistantTurn({
     if (includeFullPdfContextRef?.current && fullPdfTextRef?.current) {
         userText = `Context from PDF:\n"""${fullPdfTextRef.current}"""\n\n${userText}`;
         includeFullPdfContextRef.current = false;
-    }
-
-    if (!window.electronAPI) {
-        yield toTextYield("Electron API not available.");
-        return;
     }
 
     const queue: ExcelorStreamingQueueItem[] = [];
@@ -117,6 +188,8 @@ export async function* streamExcelorAssistantTurn({
     let emittedText = "";
     let acceptedScope: ExcelorScope = requestedScope;
     let watchdogId: number | null = null;
+    let unsubscribe: (() => void) | null = null;
+    let abortRequested = false;
 
     const clearWatchdog = () => {
         if (watchdogId !== null) {
@@ -125,11 +198,21 @@ export async function* streamExcelorAssistantTurn({
         }
     };
 
+    const detachRuntimeListeners = () => {
+        clearWatchdog();
+        unsubscribe?.();
+        unsubscribe = null;
+    };
+
+    function cleanupAbortListener() {
+        abortSignal?.removeEventListener("abort", handleAbortSignal);
+    }
+
     const finish = (item: ExcelorStreamingQueueItem) => {
         if (settled) return;
         settled = true;
-        clearWatchdog();
-        unsubscribe();
+        detachRuntimeListeners();
+        cleanupAbortListener();
         pushQueue(item);
     };
 
@@ -142,14 +225,14 @@ export async function* streamExcelorAssistantTurn({
         }
 
         try {
-            await window.electronAPI.excelorAbortTurn(acceptedScope);
+            await window.electronAPI.excelorAbortTurn(acceptedScope, EXCELOR_INACTIVITY_ABORT_REASON);
         } catch (_error) {
             // Best effort: the runtime may have already exited.
         }
 
         finish({
             type: "error",
-            message: "Excelor timed out after 120 seconds of inactivity.",
+            message: EXCELOR_INACTIVITY_ABORT_REASON,
         });
     };
 
@@ -198,6 +281,10 @@ export async function* streamExcelorAssistantTurn({
         if (snapshot.status !== "idle" || snapshot.activeTurnId) return;
 
         if (snapshot.lastError) {
+            if (abortRequested && snapshot.lastError === EXCELOR_USER_ABORT_REASON) {
+                finish({ type: "abort" });
+                return;
+            }
             finish({ type: "error", message: snapshot.lastError });
             return;
         }
@@ -207,7 +294,26 @@ export async function* streamExcelorAssistantTurn({
         finish({ type: "done", answer });
     };
 
-    const unsubscribe = window.electronAPI.onExcelorSnapshot((snapshot) => {
+    function handleAbortSignal() {
+        if (abortRequested || settled) return;
+        abortRequested = true;
+        detachRuntimeListeners();
+        cleanupAbortListener();
+
+        void (async () => {
+            try {
+                await window.electronAPI.excelorAbortTurn(acceptedScope, EXCELOR_USER_ABORT_REASON);
+            } catch (_error) {
+                // Best effort: the runtime may have already exited.
+            }
+
+            if (settled) return;
+            settled = true;
+            pushQueue({ type: "abort" });
+        })();
+    }
+
+    unsubscribe = window.electronAPI.onExcelorSnapshot((snapshot) => {
         if (snapshot.scope !== acceptedScope) return;
         if (launchedTurnId && snapshot.activeTurnId && snapshot.activeTurnId !== launchedTurnId) {
             finish({ type: "error", message: "Excelor run was interrupted by a newer request." });
@@ -219,33 +325,48 @@ export async function* streamExcelorAssistantTurn({
         maybeComplete(snapshot);
     });
 
-    touchWatchdog();
+    abortSignal?.addEventListener("abort", handleAbortSignal, { once: true });
+    if (abortSignal?.aborted) {
+        handleAbortSignal();
+    }
 
-    void window.electronAPI.excelorLaunch(userText, requestedScope)
-        .then((launchSnapshot) => {
-            if (launchSnapshot.scope !== acceptedScope) {
-                console.warn(
-                    `[Excelor] Scope mismatch detected in ${runtimeLabel}. Requested '${requestedScope}', received '${launchSnapshot.scope}'. Auto-recovering to '${launchSnapshot.scope}'.`,
-                );
-                acceptedScope = launchSnapshot.scope;
-            }
+    if (!abortRequested) {
+        touchWatchdog();
 
-            launchedTurnId = launchSnapshot.activeTurnId;
-            if (!launchedTurnId) {
-                throw new Error(launchSnapshot.lastError || "Excelor did not start a turn.");
-            }
+        void window.electronAPI.excelorLaunch(userText, requestedScope)
+            .then((launchSnapshot) => {
+                if (abortRequested || settled) {
+                    return;
+                }
 
-            touchWatchdog();
-            if (latestSnapshot?.activeTurnId === launchedTurnId) {
-                sawRunningSnapshot = true;
-            }
+                if (launchSnapshot.scope !== acceptedScope) {
+                    console.warn(
+                        `[Excelor] Scope mismatch detected in ${runtimeLabel}. Requested '${requestedScope}', received '${launchSnapshot.scope}'. Auto-recovering to '${launchSnapshot.scope}'.`,
+                    );
+                    acceptedScope = launchSnapshot.scope;
+                }
 
-            maybeComplete(launchSnapshot);
-        })
-        .catch((error: unknown) => {
-            const message = error instanceof Error ? error.message : String(error);
-            finish({ type: "error", message });
-        });
+                launchedTurnId = launchSnapshot.activeTurnId;
+                if (!launchedTurnId) {
+                    throw new Error(launchSnapshot.lastError || "Excelor did not start a turn.");
+                }
+
+                touchWatchdog();
+                if (latestSnapshot?.activeTurnId === launchedTurnId) {
+                    sawRunningSnapshot = true;
+                }
+
+                maybeComplete(launchSnapshot);
+            })
+            .catch((error: unknown) => {
+                if (abortRequested || settled) {
+                    return;
+                }
+
+                const message = error instanceof Error ? error.message : String(error);
+                finish({ type: "error", message });
+            });
+    }
 
     while (true) {
         if (queue.length === 0) {
@@ -276,6 +397,10 @@ export async function* streamExcelorAssistantTurn({
                 yield toTextYield(`${emittedText}\n\nError: ${next.message}`);
             }
             return;
+        }
+
+        if (next.type === "abort") {
+            throw createAbortError();
         }
 
         const answer = next.answer || "Excelor did not return a response.";

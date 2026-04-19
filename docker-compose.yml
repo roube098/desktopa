@@ -16,6 +16,7 @@ services:
     environment:
       JWT_ENABLED: "false"
       EXAMPLE_ENABLED: "true"
+      PLUGINS_ENABLED: "false"
       ALLOW_PRIVATE_IP_ADDRESS: "true"
       ALLOW_META_IP_ADDRESS: "true"
       ONLYOFFICE_PORT: "${ONLYOFFICE_PORT:-8080}"

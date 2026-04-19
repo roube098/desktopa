@@ -3,6 +3,8 @@ import { motion } from 'framer-motion';
 import type { Skill } from '../types/skills';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { SkillScopeChip } from './SkillListRowMeta';
+import { formatSkillDate, hasBrandColor } from '../lib/skill-view-helpers';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -68,11 +70,7 @@ export const SkillDetail = memo(function SkillDetail({
     onShowInFolder(selectedFilePath || skill.filePath);
   }, [onShowInFolder, selectedFilePath, skill.filePath]);
 
-  const formattedDate = new Date(skill.updatedAt).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  const formattedDate = formatSkillDate(skill.updatedAt);
 
   const selectedFileName = useMemo(() => {
     const parts = (selectedFilePath || '').split(/[\\/]/).filter(Boolean);
@@ -80,7 +78,14 @@ export const SkillDetail = memo(function SkillDetail({
   }, [selectedFilePath, skill.name]);
 
   const isPrimarySkillFile = selectedFilePath === skill.filePath;
-  const title = isPrimarySkillFile ? skill.name : selectedFileName;
+  const displayTitle = skill.interface?.displayName || skill.name;
+  const title = isPrimarySkillFile ? displayTitle : selectedFileName;
+  const subtitle =
+    skill.interface?.shortDescription || skill.shortDescription || skill.description || '';
+  const heroAccent = hasBrandColor(skill) ? skill.interface!.brandColor!.trim() : undefined;
+
+  const sourceLabel =
+    skill.source === 'official' ? 'Excelor' : skill.source === 'community' ? 'Community' : 'Local / custom';
 
   return (
     <motion.div
@@ -92,14 +97,15 @@ export const SkillDetail = memo(function SkillDetail({
       className="flex h-full flex-col text-foreground overflow-hidden"
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-        <h2 className="text-[15px] font-semibold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-          {title}
+        <h2 className="text-[15px] font-semibold flex items-center gap-2 min-w-0" style={{ color: 'var(--text-primary)' }}>
+          <span className="truncate">{title}</span>
           {skill.isVerified && (
             <svg
               width="14"
               height="14"
               viewBox="0 0 24 24"
               fill="currentColor"
+              className="shrink-0"
               style={{ color: 'var(--accent-light)' }}
             >
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
@@ -141,33 +147,117 @@ export const SkillDetail = memo(function SkillDetail({
 
       {isPrimarySkillFile && (
         <>
-          <div className="flex gap-8 px-5 py-3.5 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[10px] font-medium uppercase tracking-[0.06em]" style={{ color: 'var(--text-muted)' }}>Added by</span>
-              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                {skill.source === 'official' ? 'Excelor' : skill.source === 'community' ? 'Anthropic' : 'You'}
-              </span>
+          <header
+            className="skill-detail-hero px-5 py-4 flex-shrink-0 border-l-[3px]"
+            style={{
+              borderBottom: '1px solid var(--border)',
+              borderLeftColor: heroAccent || 'transparent',
+            }}
+          >
+            <h3 className="text-[18px] font-semibold leading-tight" style={{ color: 'var(--text-primary)' }}>
+              {displayTitle}
+            </h3>
+            {subtitle ? (
+              <p className="skill-detail-sub mt-1.5 text-[13px] leading-snug" style={{ color: 'var(--text-secondary)' }}>
+                {subtitle}
+              </p>
+            ) : null}
+            <div className="skill-detail-chips mt-3 flex flex-wrap items-center gap-2">
+              <SkillScopeChip skill={skill} />
+              {skill.pluginName ? (
+                <span className="skill-plugin-chip" title="Plugin">
+                  Plugin: {skill.pluginName}
+                </span>
+              ) : null}
+              {skill.isVerified ? (
+                <span className="skill-verified-chip">Verified</span>
+              ) : null}
             </div>
-            <div className="flex flex-col gap-0.5">
+          </header>
+
+          <div className="flex flex-wrap gap-x-8 gap-y-3 px-5 py-3.5 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div className="flex flex-col gap-0.5 min-w-[100px]">
+              <span className="text-[10px] font-medium uppercase tracking-[0.06em]" style={{ color: 'var(--text-muted)' }}>Source</span>
+              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{sourceLabel}</span>
+            </div>
+            <div className="flex flex-col gap-0.5 min-w-[100px]">
               <span className="text-[10px] font-medium uppercase tracking-[0.06em]" style={{ color: 'var(--text-muted)' }}>Last updated</span>
               <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{formattedDate}</span>
             </div>
-            <div className="flex flex-col gap-0.5">
+            <div className="flex flex-col gap-0.5 min-w-[120px]">
               <span className="text-[10px] font-medium uppercase tracking-[0.06em]" style={{ color: 'var(--text-muted)' }}>Trigger</span>
-              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                {skill.command || `Slash command + auto`}
+              <span className="text-[13px] font-mono font-medium break-all" style={{ color: 'var(--text-primary)' }}>
+                {skill.command || 'Slash command + auto'}
               </span>
             </div>
           </div>
 
-          <div className="px-5 py-3.5 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <span className="text-[10px] font-medium uppercase tracking-[0.06em]" style={{ color: 'var(--text-muted)' }}>Description</span>
-            </div>
-            <p className="text-[13px] leading-[1.6]" style={{ color: 'var(--text-secondary)' }}>
+          <section className="px-5 py-3.5 flex-shrink-0 skill-detail-section" style={{ borderBottom: '1px solid var(--border)' }}>
+            <h4 className="text-[10px] font-semibold uppercase tracking-[0.08em] mb-2" style={{ color: 'var(--text-muted)' }}>Description</h4>
+            <p className="text-[13px] leading-[1.65]" style={{ color: 'var(--text-secondary)' }}>
               {skill.description || 'No description provided.'}
             </p>
-          </div>
+          </section>
+
+          {skill.dependencies?.tools && skill.dependencies.tools.length > 0 ? (
+            <section className="px-5 py-3.5 flex-shrink-0 skill-detail-section" style={{ borderBottom: '1px solid var(--border)' }}>
+              <h4 className="text-[10px] font-semibold uppercase tracking-[0.08em] mb-2" style={{ color: 'var(--text-muted)' }}>Dependencies</h4>
+              <div className="overflow-x-auto">
+                <table className="skill-detail-deps w-full text-left text-[12px]">
+                  <thead>
+                    <tr>
+                      <th className="skill-detail-deps-th">Type</th>
+                      <th className="skill-detail-deps-th">Value</th>
+                      <th className="skill-detail-deps-th">Transport</th>
+                      <th className="skill-detail-deps-th">Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {skill.dependencies.tools.map((t, idx) => (
+                      <tr key={`${t.type}-${t.value}-${idx}`}>
+                        <td className="skill-detail-deps-td font-mono">{t.type}</td>
+                        <td className="skill-detail-deps-td font-mono break-all">{t.value}</td>
+                        <td className="skill-detail-deps-td">{t.transport ?? '—'}</td>
+                        <td className="skill-detail-deps-td">{t.description ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
+
+          {skill.policy ? (
+            <section className="px-5 py-3.5 flex-shrink-0 skill-detail-section" style={{ borderBottom: '1px solid var(--border)' }}>
+              <h4 className="text-[10px] font-semibold uppercase tracking-[0.08em] mb-2" style={{ color: 'var(--text-muted)' }}>Policy</h4>
+              <dl className="skill-detail-policy text-[13px] space-y-1">
+                <div className="flex gap-2">
+                  <dt style={{ color: 'var(--text-muted)' }}>Implicit invocation</dt>
+                  <dd style={{ color: 'var(--text-primary)' }}>
+                    {skill.policy.allowImplicitInvocation !== false ? 'Allowed' : 'Disallowed'}
+                  </dd>
+                </div>
+                {skill.policy.products && skill.policy.products.length > 0 ? (
+                  <div className="flex gap-2">
+                    <dt style={{ color: 'var(--text-muted)' }}>Products</dt>
+                    <dd style={{ color: 'var(--text-primary)' }}>{skill.policy.products.join(', ')}</dd>
+                  </div>
+                ) : null}
+              </dl>
+            </section>
+          ) : null}
+
+          <footer className="skill-detail-meta px-5 py-3 flex-shrink-0 flex flex-wrap gap-x-6 gap-y-2 text-[12px]" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+            <span className="min-w-0 break-all">
+              Path: <code className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>{skill.filePath}</code>
+            </span>
+            <span>Updated {formattedDate}</span>
+            {skill.githubUrl ? (
+              <a href={skill.githubUrl} target="_blank" rel="noreferrer" className="underline hover:opacity-90" style={{ color: 'var(--accent-light)' }}>
+                View source
+              </a>
+            ) : null}
+          </footer>
         </>
       )}
 
@@ -213,7 +303,7 @@ export const SkillDetail = memo(function SkillDetail({
               {!isLoadingFile && !fileError && viewMode === 'preview' && (
                 <div className="skills-markdown">
                   <Markdown remarkPlugins={[remarkGfm]}>
-                    {fileContent || '*Empty file.*'}
+                    {fileContent ? fileContent.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trimStart() : '*Empty file.*'}
                   </Markdown>
                 </div>
               )}

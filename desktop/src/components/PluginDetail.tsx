@@ -234,7 +234,7 @@ export const PluginDetail = memo(function PluginDetail({
             {!isLoadingFile && !fileError && viewMode === 'preview' && (
               <div className="skills-markdown">
                 <Markdown remarkPlugins={[remarkGfm]}>
-                  {fileContent || '*Empty file.*'}
+                  {fileContent ? fileContent.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trimStart() : '*Empty file.*'}
                 </Markdown>
               </div>
             )}
